@@ -1,6 +1,5 @@
 require('long-stack-traces');
 
-var VERSION = '1.1.5';
 var DEBUG_PACKETS = true;
 
 var WebSocket = require('websocket'),
@@ -61,133 +60,97 @@ var assets = {
     }
 };
 
+var routes = [
+    ['use', Express.methodOverride()],
+    ['use', function(req, res, next) {
+        res.header('Access-Control-Allow-Origin', '*');
+        res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE');
+        res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
-function Amber(db) {
-    this.db = db;
-    var fileServer = Express();
-    this.paths.forEach(function (path) {
-        fileServer[path[0]].apply(fileServer, path.slice(1));
-    });
-
-    var server = HTTP.createServer(fileServer);
-
-    new WebSocket.server({
-        httpServer: server,
-        autoAcceptConnections: false
-    }).on('request', this.request.bind(this));
-
-    server.listen(process.env.PORT || 8080);
-
-    this.clients = [];
-}
-
-Amber.create = function (cb) {
-    cb(new Amber(mongoose));
-};
-
-extend(Amber.prototype, {
-    request: function(request) {
-        this.addClient(new Client(this, request.accept('', request.origin)));
-    },
-    addClient: function (client) {
-        this.clients.push(client);
-    },
-    removeClient: function (client) {
-        this.clients.splice(this.clients.indexOf(client), 1);
-    },
-    paths: [
-        ['use', Express.methodOverride()],
-        ['use', function(req, res, next) {
-            res.header('Access-Control-Allow-Origin', '*');
-            res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE');
-            res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-
-            if ('OPTIONS' === req.method) {
-                res.send(200);
+        if ('OPTIONS' === req.method) {
+            res.send(200);
+        } else {
+            next();
+        }
+    }],
+    ['get', '/api/assets/:hash', function (req, res) {
+        assets.get(req.params.hash, function (data) {
+            if (data) {
+                res.header('Cache-Control', 'max-age=31557600, public');
+                res.end(data);
             } else {
-                next();
+                res.statusCode = 404;
+                res.end();
             }
-        }],
-        ['get', '/api/assets/:hash', function (req, res) {
-            assets.get(req.params.hash, function (data) {
-                if (data) {
-                    res.header('Cache-Control', 'max-age=31557600, public');
+        });
+    }],
+    ['post', '/api/assets', function (req, res) {
+        var buffers = [];
+        req.on('data', function (data) {
+            buffers.push(data);
+        });
+        req.on('end', function () {
+            var data = Buffer.concat(buffers);
+            assets.set(data, function (hash) {
+                res.end(hash);
+            });
+        });
+    }],
+    ['get', '/api/projects/:pk', function (req, res) {
+        Project.findById(req.params.pk, function (err, project) {
+            if (project) {
+                project.views++;
+                project.save();
+                project.load(function (data) {
                     res.end(data);
-                } else {
-                    res.statusCode = 404;
-                    res.end();
-                }
-            });
-        }],
-        ['post', '/api/assets', function (req, res) {
-            var buffers = [];
-            req.on('data', function (data) {
-                buffers.push(data);
-            });
-            req.on('end', function () {
-                var data = Buffer.concat(buffers);
-                assets.set(data, function (hash) {
-                    res.end(hash);
                 });
-            });
-        }],
-        ['get', '/api/projects/:pk', function (req, res) {
-            Project.findById(req.params.pk, function (err, project) {
-                if (project) {
-                    project.views++;
-                    project.save();
-                    project.load(function (data) {
+            } else {
+                res.statusCode = 404;
+                res.end();
+            }
+        });
+    }],
+    ['get', '/api/projects/:pk/thumbnail', function (req, res) {
+        ProjectInfo.fromID(Number(req.params.pk), function (project) {
+            if (project) {
+                assets.get(res, project.thumbnail, function (data) {
+                    if (data) {
+                        res.header('Cache-Control', 'max-age=31557600, public');
                         res.end(data);
-                    });
-                } else {
-                    res.statusCode = 404;
-                    res.end();
-                }
-            });
-        }],
-        ['get', '/api/projects/:pk/thumbnail', function (req, res) {
-            ProjectInfo.fromID(Number(req.params.pk), function (project) {
-                if (project) {
-                    assets.get(res, project.thumbnail, function (data) {
-                        if (data) {
-                            res.header('Cache-Control', 'max-age=31557600, public');
-                            res.end(data);
-                        } else {
-                            res.statusCode = 404;
-                            res.end();
-                        }
-                    });
-                } else {
-                    res.statusCode = 404;
-                    res.end();
-                }
-            });
-        }],
-        ['get', '/api/projects/:pk/:v', function (req, res) {
-            ProjectInfo.fromID(Number(req.params.pk), function (project) {
-                if (project) {
-                    project.loadVersion(req.params.v, function (data) {
-                        if (data) {
-                            res.statusCode = 200;
-                            res.end(JSON.stringify(project.toJSON(true)));
-                        } else {
-                            res.statusCode = 404;
-                            res.end();
-                        }
-                    });
-                } else {
-                    res.statusCode = 404;
-                    res.end();
-                }
-            });
-        }],
-        ['use', '/', Express.static('./public')]
-    ]
-});
+                    } else {
+                        res.statusCode = 404;
+                        res.end();
+                    }
+                });
+            } else {
+                res.statusCode = 404;
+                res.end();
+            }
+        });
+    }],
+    ['get', '/api/projects/:pk/:v', function (req, res) {
+        ProjectInfo.fromID(Number(req.params.pk), function (project) {
+            if (project) {
+                project.loadVersion(req.params.v, function (data) {
+                    if (data) {
+                        res.statusCode = 200;
+                        res.end(JSON.stringify(project.toJSON(true)));
+                    } else {
+                        res.statusCode = 404;
+                        res.end();
+                    }
+                });
+            } else {
+                res.statusCode = 404;
+                res.end();
+            }
+        });
+    }],
+    ['use', '/', Express.static('./public')]
+];
 
 
-function Client(amber, connection) {
-    this.amber = amber;
+function Client(connection) {
     this.connection = connection;
     connection.on('message', this.message.bind(this));
     connection.on('close', this.close.bind(this));
@@ -234,7 +197,7 @@ extend(Client.prototype, {
         }
     },
     close: function () {
-        this.amber.removeClient(this);
+        // TODO
     },
     sendPacket: function (packet) {
         this.connection.send(this.encodePacket(packet));
@@ -267,9 +230,6 @@ extend(Client.prototype, {
         } catch (e) {
             console.log(e.stack || e);
         }
-    },
-    db: function () {
-        return this.amber.db;
     },
     packets: {
         /**
@@ -787,20 +747,6 @@ function arrayToJSON(array) {
     });
 }
 
-
-function Packet(data, object) {
-    if (Array.isArray(data)) {
-        var array = data;
-        var info = packets.recieved[array[0]];
-        var i = info && info.length;
-        this.packetType = array[0];
-        while (i--) {
-            this[info[i]] = array[i + 1];
-        }
-    } else {
-        this.packetType = data;
-    }
-}
 
 var ProjectSchema = Schema({
     _id: {type: Schema.ObjectId, auto: true},
@@ -1355,9 +1301,6 @@ var UserSchema = Schema({
 });
 
 extend(UserSchema.methods, {
-    amber: function () {
-        return this.client.amber();
-    },
     sendPacket: function (packet) {
         this.client.sendPacket(packet);
     },
@@ -1622,6 +1565,21 @@ function get(host, path, cb, binary) {
     });
 }
 
-Amber.create(function (amber) {
 
-});
+(function () {
+    var fileServer = Express();
+    routes.forEach(function (path) {
+        fileServer[path[0]].apply(fileServer, path.slice(1));
+    });
+
+    var server = HTTP.createServer(fileServer);
+
+    new WebSocket.server({
+        httpServer: server,
+        autoAcceptConnections: false
+    }).on('request', function (req) {
+        new Client(req.accept('', req.origin));
+    });
+
+    server.listen(process.env.PORT || 8080);
+}) ();
