@@ -11,6 +11,7 @@ var WebSocket = require('websocket'),
     Async = require('async'),
     mongoose = require('mongoose'),
     Schema = mongoose.Schema,
+    Promise = require('mpromise'),
     sbIO = require('./sbio.js');
 
 var ObjectId = Schema.ObjectId;
@@ -203,33 +204,23 @@ extend(Client.prototype, {
         this.connection.send(this.encodePacket(packet));
     },
     processPacket: function (packet) {
-        try {
-            var self = this,
-                obj = this.packets[packet.$];
-            if (typeof obj !== 'function') {
-                console.warn('Undefined packet', packet.$);
-                return;
-            }
-            function callback(response) {
-                if (packet.request$id) {
-                    response.request$id = packet.request$id;
-                }
-                self.sendPacket(response);
-            }
-            packet.callback = callback;
-            packet.error = function () {
-                callback({
-                    $: 'request.error',
-                    code: 0
-                });
-            }
-            var response = obj.call(this, packet);
-            if (response) {
-                callback(response);
-            }
-        } catch (e) {
-            console.log(e.stack || e);
+        var self = this,
+            obj = this.packets[packet.$];
+        if (typeof obj !== 'function') {
+            console.warn('Undefined packet', packet.$);
+            return;
         }
+        var promise = new Promise(function (err, response) {
+            var response = err ? {
+                $: 'server.error',
+                reason: err
+            } : response;
+            if (packet.request$id) {
+                response.request$id = packet.request$id;
+            }
+            self.sendPacket(response);
+        });
+        obj.call(this, packet, promise);
     },
     packets: {
         /**
@@ -238,22 +229,27 @@ extend(Client.prototype, {
          * @param {User?}    user       the client’s current user or null if the client is not logged in
          * @param {unsigned} sessionId  the client’s session ID
          */
-        'connect': function (packet, cb) {
+        'connect': function (packet, promise) {
             var self = this;
-            function cb(err, user) {
-                self.user = user ? user._id : null;
-                packet.callback({
-                    $: 'connect',
-                    user: user ? user.serialize() : null,
-                    sessionId: self.session
-                });
-            }
             if (packet.sessionId) {
                 this.session = packet.sessionId;
-                User.findOne({session: packet.sessionId}, cb);
+                User.findOne({session: packet.sessionId}, function (err, user) {
+                    if (user) {
+                        promise.fulfill({
+                            $: 'connect',
+                            sessionId: self.session,
+                            user: user.serialize()
+                        });
+                    } else {
+                        promise.reject('Bad session ID');
+                    }
+                });
             } else {
                 this.session = Crypto.randomBytes(20).toString('hex');
-                cb();
+                promise.fulfill({
+                    $: 'connect',
+                    sessionId: this.session
+                });
             }
         },
 
@@ -262,27 +258,23 @@ extend(Client.prototype, {
          *
          * @param {string} username  the username
          */
-        'auth.signIn': function (packet, cb) {
+        'auth.signIn': function (packet, promise) {
             var self = this;
 
             User.findById(new RegExp('^' + RegExp.quote(packet.username) + '$', 'i'), function (err, user) {
-                function succeeded(user) {
+                var p = new Promise();
+                p.onfulfill(function (user) {
                     self.user = user._id;
                     user.session = self.session;
                     user.save();
-                    packet.callback({
-                        $: 'auth.signIn.succeeded',
+                    promise.fulfill({
+                        $: 'request.result',
                         user: user.serialize()
                     });
-                }
-                function fail(message) {
-                    packet.callback({
-                        $: 'auth.signIn.failed',
-                        message: message
-                    });
-                }
+                });
+                p.onReject(promise.reject);
                 if (user && user.checkPassword(packet.password)) {
-                    succeeded(user);
+                    p.fulfill(user);
                 } else {
                     HTTP.request({
                         hostname: 'scratch.mit.edu',
@@ -291,20 +283,20 @@ extend(Client.prototype, {
                         method: 'POST'
                     }, function(res) {
                         if (res.statusCode === 403) {
-                            fail('Wrong password');
+                            p.reject('Wrong password');
                         } else {
                             function cb() {
                                 user.setPassword(packet.password, function () {
-                                    succeeded(user);
+                                    p.fulfill(user);
                                 });
                             }
-                            if (!user) {
+                            if (user) {
+                                cb();
+                            } else {
                                 get('scratch.mit.edu', '/site-api/users/all/' + packet.username + '/', function (data) {
                                     user = new User({_id: JSON.parse(data).user.username});
                                     cb();
                                 });
-                            } else {
-                                cb();
                             }
                         }
                     }).end(JSON.stringify({
@@ -317,19 +309,20 @@ extend(Client.prototype, {
         /**
          * Initiates a log out attempt.
          */
-        'auth.signOut': function (packet, cb) {
+        'auth.signOut': function (packet, promise) {
             User.findById(this.user, function (err, user) {
                 user.session = null;
-                user.save();
-                packet.callback({
-                    $: 'auth.signOut.succeeded'
+                user.save(function (err) {
+                    promise.fulfill({
+                        $: 'request.result'
+                    });
                 });
             });
             this.user = null;
         },
-        'request.users.user': function (packet, cb) {
+        /*'request.users.user': function (packet, promise) {
             User.findById(packet.user, function (err, user) {
-                packet.callback({
+                promise.fulfill({
                     $: 'request.result',
                     result: {
                         name: result._id,
@@ -337,7 +330,7 @@ extend(Client.prototype, {
                     }
                 });
             });
-        },
+        },*/
         /**
          * Queries information about a project.
          *
@@ -345,23 +338,16 @@ extend(Client.prototype, {
          *
          * @return {Project}
          */
-        'request.project': function (packet, cb) {
+        'request.project': function (packet, promise) {
             Project.findById(packet.project$id, function (err, project) {
-                packet.callback({
-                    $: 'request.result',
-                    result: {
-                        id: project.id,
-                        name: project.name,
-                        notes: project.notes,
-                        authors: project.authors,
-                        created: project.created,
-                        favorites: project.favorites,
-                        loves: project.loves,
-                        views: project.views,
-                        hash: project.latest(),
-                        remixes: project.remixes
-                    }
-                })
+                if (project) {
+                    promise.fulfill({
+                        $: 'request.result',
+                        result: project.serialize()
+                    });
+                } else {
+                    promise.reject('Not found');
+                }
             });
         },
         /**
@@ -369,9 +355,9 @@ extend(Client.prototype, {
          *
          * @return {unsigned}
          */
-        'request.projects.count': function (packet, cb) {
+        'request.projects.count': function (packet, promise) {
             Project.count(function (err, count) {
-                packet.callback({
+                promise.fulfill({
                     $: 'request.result',
                     result: count
                 });
@@ -385,10 +371,10 @@ extend(Client.prototype, {
          *
          * @return {(subset of Project)[]}
          */
-        'request.projects.featured': function (packet, cb) {
+        'request.projects.featured': function (packet, promise) {
             // TODO: Replace with collection view
-            Project.find().lean().skip(packet.offset).limit(packet.length).exec(function (e, result) {
-                packet.callback({
+            Project.find().skip(packet.offset).limit(packet.length).exec(function (err, result) {
+                promise.fulfill({
                     $: 'request.result',
                     result: result.map(function (p) {
                         return {
@@ -411,9 +397,9 @@ extend(Client.prototype, {
          *
          * @return {(subset of Project)[]}
          */
-        'request.projects.topLoved': function (packet, cb) {
-            Project.find().lean().sort('-loves').skip(packet.offset).limit(packet.length).exec(function (e, result) {
-                packet.callback({
+        'request.projects.topLoved': function (packet, promise) {
+            Project.find().sort('-loves').skip(packet.offset).limit(packet.length).exec(function (e, result) {
+                promise.fulfill({
                     $: 'request.result',
                     result: result.map(function (p) {
                         return {
@@ -436,9 +422,9 @@ extend(Client.prototype, {
          *
          * @return {(subset of Project)[]}
          */
-        'request.projects.topViewed': function (packet, cb) {
+        'request.projects.topViewed': function (packet, promise) {
             Project.find().lean().sort('-views').skip(packet.offset).limit(packet.length).exec(function (err, result) {
-                packet.callback({
+                promise.fulfill({
                     $: 'request.result',
                     result: result.map(function (p) {
                         return {
@@ -462,9 +448,9 @@ extend(Client.prototype, {
          *
          * @return {(subset of Project)[]}
          */
-        'request.projects.topRemixed': function (packet, cb) {
+        'request.projects.topRemixed': function (packet, promise) {
             Project.find().lean().sort('-remixCount').skip(packet.offset).limit(packet.length).populate('remixes').exec(function (e, result) {
-                packet.callback({
+                promise.fulfill({
                     $: 'request.result',
                     result: result.map(function (p) {
                         return {
@@ -488,8 +474,15 @@ extend(Client.prototype, {
          *
          * @return {(subset of Project)[]}
          */
-        'request.projects.lovedByFollowing': function (packet, cb) {
-
+        'request.projects.lovedByFollowing': function (packet, promise) {
+            if (this.user) {
+                User.findById(this.user).populate('following', '+projects').exec(function (err, user) {
+                    console.log(user.following);
+                    //user.following;
+                });
+            } else {
+                promise.reject('Not signed in');
+            }
         },
         /**
          * Queries the list of projects by users the current user is following, sorted by date.
@@ -499,7 +492,7 @@ extend(Client.prototype, {
          *
          * @return {(subset of Project)[]}
          */
-         'request.projects.byFollowing': function (packet, cb) {
+         'request.projects.byFollowing': function (packet, promise) {
 
          },
         /**
@@ -509,9 +502,9 @@ extend(Client.prototype, {
          *
          * @return {ForumCategory[]}
          */
-        'request.forums.categories': function (packet, cb) {
+        'request.forums.categories': function (packet, promise) {
             ForumCategory.find().populate('forums').exec(function (err, result) {
-                packet.callback({
+                promise.fulfill({
                     $: 'request.result',
                     result: result.map(function (category) {
                         return {
@@ -537,9 +530,9 @@ extend(Client.prototype, {
          *
          * @return {Forum}
          */
-        'request.forums.forum': function (packet, cb) {
+        'request.forums.forum': function (packet, promise) {
             Forum.findById(packet.forum$id, function (err, forum) {
-                packet.callback({
+                promise.fulfill({
                     $: 'request.result',
                     result: {
                         id: forum._id,
@@ -561,9 +554,9 @@ extend(Client.prototype, {
          *
          * @return {Topic[]}
          */
-        'request.forums.topics': function (packet, cb) {
+        'request.forums.topics': function (packet, promise) {
             Topic.find({forum: packet.forum$id}).sort('-modified').skip(packet.offset).limit(packet.length).exec(function (err, topics) {
-                packet.callback({
+                promise.fulfill({
                     $: 'request.result',
                     result: topics.map(function (topic) {
                         return {
@@ -585,10 +578,10 @@ extend(Client.prototype, {
          *
          * @return {Topic}
          */
-        'request.forums.topic': function (packet, cb) {
+        'request.forums.topic': function (packet, promise) {
             Topic.findById(packet.topic$id, function (err, topic) {
                 if (topic) {
-                    packet.callback({
+                    promise.fulfill({
                         $: 'request.result',
                         result: {
                             id: topic._id,
@@ -600,7 +593,7 @@ extend(Client.prototype, {
                         }
                     });
                 } else {
-                    packet.error();
+                    promise.reject('Not found');
                 }
             });
         },
@@ -614,11 +607,11 @@ extend(Client.prototype, {
          *
          * @return {Post[]}
          */
-        'request.forums.posts': function (packet, cb) {
+        'request.forums.posts': function (packet, promise) {
             Topic.findById(packet.topic$id).populate('posts').exec(function (err, topic) {
                 if (topic) {
                     var posts = topic.posts.slice(packet.offset, packet.offset + packet.length);
-                    packet.callback({
+                    promise.fulfill({
                         $: 'request.result',
                         result: posts.map(function (post) {
                             return {
@@ -631,14 +624,14 @@ extend(Client.prototype, {
                         })
                     });
                 } else {
-                    packet.error();
+                    promise.reject('Not found');
                 }
             });
         },
-        'request.forums.post.add': function (packet, cb) {
+        'request.forums.post.add': function (packet, promise) {
             var self = this;
             if (!this.user) {
-                packet.error();
+                promise.reject('Not signed in');
                 return;
             }
             Topic.findById(packet.topic$id, function (err, topic) {
@@ -647,34 +640,34 @@ extend(Client.prototype, {
                     post.save(function (err) {
                         topic.addPost(post);
                         post.update(self.user, packet.body.trim(), null, function () {
-                            packet.callback({
+                            promise.fulfill({
                                 $: 'request.result'
                             });
                         }); 
                     });
                 } else {
-                    packet.error();
+                    promise.reject('Not found');
                 }
             });
         },
-        'request.forums.post.edit': function (packet, cb) {
+        'request.forums.post.edit': function (packet, promise) {
             var self = this;
             Post.findById(packet.post$id, function (err, post) {
                 if (post) {
                     post.update(self.user, packet.body.trim(), packet.name, function () {
-                        packet.callback({
+                        promise.fulfill({
                             $: 'request.result'
                         });
                     });
                 } else {
-                    packet.error();
+                    promise.reject('Not found');
                 }
             });
         },
-        'request.forums.topic.add': function (packet, cb) {
+        'request.forums.topic.add': function (packet, promise) {
             var self = this;
             if (!this.user) {
-                packet.error();
+                promise.reject('Not signed in');
                 return;
             }
             Forum.findById(packet.forum$id, function (err, forum) {
@@ -683,7 +676,9 @@ extend(Client.prototype, {
                         forum: packet.forum$id,
                         name: packet.name
                     });
-                    var post = new Post();
+                    var post = new Post({
+                        isHead: true
+                    });
                     topic.addPost(post);
                     Async.parallel([
                         function (cb) {
@@ -694,7 +689,7 @@ extend(Client.prototype, {
                         }
                     ], function (err) {
                         post.update(self.user, packet.body.trim(), null, function () {
-                            packet.callback({
+                            promise.fulfill({
                                 $: 'request.result',
                                 result: {
                                     topic$id: topic._id,
@@ -704,23 +699,23 @@ extend(Client.prototype, {
                         });
                     });
                 } else {
-                    packet.callback({
+                    promise.fulfill({
                         $: 'request.error',
                         code: 0
                     });
                 }
             });
         },
-        'request.forums.topic.view': function (packet, cb) {
+        'request.forums.topic.view': function (packet, promise) {
             Topic.findById(packet.topic$id, function (err, topic) {
                 if (topic) {
                     topic.views++;
                     topic.save();
-                    packet.callback({
+                    promise.fulfill({
                         $: 'request.result'
                     });
                 } else {
-                    packet.error();
+                    promise.reject('Not found');
                 }
             });
         }
@@ -771,7 +766,24 @@ ProjectSchema.pre('save', function (next) {
     this.favorites = this.favoriters.length;
     next();
 });
+ProjectSchema.virtual('newest').get(function () {
+    return this.versions[this.versions.length - 1];
+})
 extend(ProjectSchema.methods, {
+    serialize: function () {
+        return {
+            id: this.id,
+            name: this.name,
+            notes: this.notes,
+            authors: this.authors,
+            created: this.created,
+            favorites: this.favorites,
+            loves: this.loves,
+            views: this.views,
+            hash: this.newest,
+            remixes: this.remixes
+        };
+    },
     load: function () {
         var version,
             cb;
@@ -791,9 +803,6 @@ extend(ProjectSchema.methods, {
         assets.set(JSON.stringify(data), function (hash) {
             versions.push(hash);
         });
-    },
-    latest: function () {
-        return this.versions[this.versions.length - 1];
     }
 });
 var Project = mongoose.model('Project', ProjectSchema);
@@ -1297,7 +1306,10 @@ var UserSchema = Schema({
     followers: [{type: String, ref: 'User'}],
     following: [{type: String, ref: 'User'}],
     passwordHash: String,
-    salt: String
+    salt: String,
+    lovedProjects: [{type: ObjectId, red: 'Project'}],
+    favoriteProjects: [{type: ObjectId, red: 'Project'}],
+    activity: []
 });
 
 extend(UserSchema.methods, {
@@ -1458,6 +1470,7 @@ var PostSchema = Schema({
     _id: {type: Schema.ObjectId, auto: true},
     topic: {type: ObjectId, ref: 'Topic'},
     authors: [{type: String, ref: 'User'}],
+    isHead: Boolean,
     versions: [{
         body: {type: String},
         author: {type: String, ref: 'User'},
