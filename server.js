@@ -1,4 +1,4 @@
-require('long-stack-traces');
+require('longjohn');
 
 var DEBUG_PACKETS = true;
 
@@ -111,24 +111,6 @@ var routes = [
             }
         });
     }],
-    ['get', '/api/projects/:pk/thumbnail', function (req, res) {
-        ProjectInfo.fromID(Number(req.params.pk), function (project) {
-            if (project) {
-                assets.get(res, project.thumbnail, function (data) {
-                    if (data) {
-                        res.header('Cache-Control', 'max-age=31557600, public');
-                        res.end(data);
-                    } else {
-                        res.statusCode = 404;
-                        res.end();
-                    }
-                });
-            } else {
-                res.statusCode = 404;
-                res.end();
-            }
-        });
-    }],
     ['get', '/api/projects/:pk/:v', function (req, res) {
         ProjectInfo.fromID(Number(req.params.pk), function (project) {
             if (project) {
@@ -150,6 +132,10 @@ var routes = [
     ['use', '/', Express.static('./public')]
 ];
 
+var Errors = {
+    NOT_FOUND: 0,
+    NO_PERMISSION: 1
+};
 
 function Client(connection) {
     this.connection = connection;
@@ -158,7 +144,7 @@ function Client(connection) {
 }
 
 extend(Client.prototype, {
-    packetTuples: {"Client:connect":["sessionId"],"Server:connect":["user","sessionId"],"Client:auth.signIn":["username","password"],"Server:auth.signIn.failed":["message"],"Server:auth.signIn.succeeded":["user"],"Client:auth.signOut":[],"Server:auth.signOut.succeeded":[],"Client:forums.posts.post":["request$id","topic$id","body"],"Client:query.project":["request$id","project$id"],"Client:query.projects.count":["request$id"],"Client:query.projects.featured":["request$id","offset","length"],"Client:query.projects.topLoved":["request$id","offset","length"],"Client:query.projects.topViewed":["request$id","offset","length"],"Client:query.projects.topRemixed":["request$id","offset","length"],"Client:query.projects.user.lovedByFollowing":["request$id","offset","length"],"Client:query.projects.user.byFollowing":["request$id","offset","length"],"Client:query.forums.categories":["request$id"],"Client:query.forums.forum":["request$id","forum$id"],"Client:query.forums.topics":["request$id","forum$id","offset","length"],"Client:query.forums.topic":["request$id","topic$id"],"Client:query.forums.posts":["request$id","topic$id","offset","length"],"Server:query.result":["request$id","result"],"Server:query.error":["request$id","code"]},
+    packetTuples: {}, // TODO: Add for deploy version
     decodePacket: function (string) {
         var tuple = JSON.parse(string);
         if (!Array.isArray(tuple)) {
@@ -211,10 +197,10 @@ extend(Client.prototype, {
             return;
         }
         var promise = new Promise(function (err, response) {
-            var response = err ? {
-                $: 'server.error',
+            var response = (err === null) ? response : {
+                $: 'request.error',
                 reason: err
-            } : response;
+            };
             if (packet.request$id) {
                 response.request$id = packet.request$id;
             }
@@ -235,14 +221,13 @@ extend(Client.prototype, {
                 this.session = packet.sessionId;
                 User.findOne({session: packet.sessionId}, function (err, user) {
                     if (user) {
-                        promise.fulfill({
-                            $: 'connect',
-                            sessionId: self.session,
-                            user: user.serialize()
-                        });
-                    } else {
-                        promise.reject('Bad session ID');
+                        self.user = user;
                     }
+                    promise.fulfill({
+                        $: 'connect',
+                        sessionId: self.session,
+                        user: user ? user.serialize() : null
+                    });
                 });
             } else {
                 this.session = Crypto.randomBytes(20).toString('hex');
@@ -258,17 +243,17 @@ extend(Client.prototype, {
          *
          * @param {string} username  the username
          */
-        'auth.signIn': function (packet, promise) {
+        'request.auth.signIn': function (packet, promise) {
             var self = this;
 
             User.findById(new RegExp('^' + RegExp.quote(packet.username) + '$', 'i'), function (err, user) {
                 var p = new Promise();
-                p.onfulfill(function (user) {
-                    self.user = user._id;
+                p.onFulfill(function (user) {
+                    self.user = user;
                     user.session = self.session;
                     user.save();
                     promise.fulfill({
-                        $: 'request.result',
+                        $: 'auth.signIn.succeeded',
                         user: user.serialize()
                     });
                 });
@@ -286,7 +271,8 @@ extend(Client.prototype, {
                             p.reject('Wrong password');
                         } else {
                             function cb() {
-                                user.setPassword(packet.password, function () {
+                                user.setPassword(packet.password);
+                                user.save(function (err) {
                                     p.fulfill(user);
                                 });
                             }
@@ -309,28 +295,51 @@ extend(Client.prototype, {
         /**
          * Initiates a log out attempt.
          */
-        'auth.signOut': function (packet, promise) {
-            User.findById(this.user, function (err, user) {
-                user.session = null;
-                user.save(function (err) {
+        'request.auth.signOut': function (packet, promise) {
+            if (this.user) {
+                this.user.session = null;
+                this.user.save(function (err) {
                     promise.fulfill({
                         $: 'request.result'
                     });
                 });
-            });
-            this.user = null;
+                this.user = null;
+            } else {
+                promise.reject(Errors.NO_PERMISSION);
+            }
         },
-        /*'request.users.user': function (packet, promise) {
-            User.findById(packet.user, function (err, user) {
+        /**
+         * Toggles following the given user
+         *
+         * @param {string} user          the user to (un)follow
+         *
+         * @return {boolean}
+         */
+        'request.user.follow': function (packet, promise) {
+            if (this.user) {
+                this.user.toggleFollowing(packet.user, function (following) {
+                    promise.fulfill({
+                        $: 'request.result',
+                        result: following
+                    });
+                });
+            } else {
+                promise.reject(Error.NO_PERMISSION);
+            }
+        },
+        /**
+         * Queries information about a user.
+         *
+         * @return {User?}
+         */
+        'request.users.user': function (packet, promise) {
+            User.findById(new RegExp('^' + RegExp.quote(packet.user) + '$', 'i'), function (err, user) {
                 promise.fulfill({
                     $: 'request.result',
-                    result: {
-                        name: result._id,
-                        group: result.group
-                    }
+                    result: user.serialize()
                 });
             });
-        },*/
+        },
         /**
          * Queries information about a project.
          *
@@ -346,9 +355,53 @@ extend(Client.prototype, {
                         result: project.serialize()
                     });
                 } else {
-                    promise.reject('Not found');
+                    promise.reject(Errors.NOT_FOUND);
                 }
             });
+        },
+        /**
+         * Toggles whether the user loves the given project.
+         *
+         * @param {objectId} project$id  the project
+         *
+         * @return {boolean}
+         */
+        'request.project.love': function (packet, promise) {
+            if (this.user) {
+                this.user.toggleLoveProject(packet.project$id, function (love) {
+                    if (love === null) {
+                        promise.reject(Errors.NOT_FOUND);
+                    } else {
+                        promise.fulfill({
+                            $: 'request.result'
+                        });
+                    }
+                });
+            } else {
+                promise.reject(Errors.NO_PERMISSION);
+            }
+        },
+        /**
+         * Toggles whether the user favorites the given project.
+         *
+         * @param {objectId} project$id  the project
+         *
+         * @return {boolean}
+         */
+        'request.project.favorite': function (packet, promise) {
+            if (this.user) {
+                this.user.toggleFavoriteProject(packet.project$id, function (love) {
+                    if (love === null) {
+                        promise.reject(Errors.NOT_FOUND);
+                    } else {
+                        promise.fulfill({
+                            $: 'request.result'
+                        });
+                    }
+                });
+            } else {
+                promise.reject(Errors.NO_PERMISSION);
+            }
         },
         /**
          * Queries the total number of Amber projects.
@@ -423,14 +476,13 @@ extend(Client.prototype, {
          * @return {(subset of Project)[]}
          */
         'request.projects.topViewed': function (packet, promise) {
-            Project.find().lean().sort('-views').skip(packet.offset).limit(packet.length).exec(function (err, result) {
+            Project.find().sort('-views').skip(packet.offset).limit(packet.length).exec(function (err, result) {
                 promise.fulfill({
                     $: 'request.result',
                     result: result.map(function (p) {
                         return {
-                            id: p._id,
+                            id: p.id,
                             views: p.views,
-                            remixes: p.remixes,
                             project: {
                                 name: p.name,
                                 thumbnail: p.thumbnail
@@ -449,7 +501,7 @@ extend(Client.prototype, {
          * @return {(subset of Project)[]}
          */
         'request.projects.topRemixed': function (packet, promise) {
-            Project.find().lean().sort('-remixCount').skip(packet.offset).limit(packet.length).populate('remixes').exec(function (e, result) {
+            Project.find().sort('-remixCount').skip(packet.offset).limit(packet.length).populate('remixes').exec(function (e, result) {
                 promise.fulfill({
                     $: 'request.result',
                     result: result.map(function (p) {
@@ -476,12 +528,9 @@ extend(Client.prototype, {
          */
         'request.projects.lovedByFollowing': function (packet, promise) {
             if (this.user) {
-                User.findById(this.user).populate('following', '+projects').exec(function (err, user) {
-                    console.log(user.following);
-                    //user.following;
-                });
+                
             } else {
-                promise.reject('Not signed in');
+                promise.reject(Error.NO_PERMISSION);
             }
         },
         /**
@@ -492,9 +541,43 @@ extend(Client.prototype, {
          *
          * @return {(subset of Project)[]}
          */
-         'request.projects.byFollowing': function (packet, promise) {
-
-         },
+        'request.projects.user.byFollowing': function (packet, promise) {
+            if (this.user) {
+                Project.find({authors: {$in: this.user.following}}).sort('-modified').skip(packet.offset).limit(packet.length).exec(function (err, projects) {
+                    promise.fulfill({
+                        $: 'request.result',
+                        result: projects.map(function (p) {
+                            return {
+                                id: p._id,
+                                authors: this.authors,
+                                project: {
+                                    name: p.name,
+                                    thumbnail: p.thumbnail
+                                }
+                            }
+                        })
+                    });
+                });
+            } else {
+                promise.reject(Error.NO_PERMISSION);
+            }
+        },
+        'request.projects.byUser': function (packet, promise) {
+            Project.find({authors: packet.user}).sort('-modified').skip(packet.offset).limit(packet.length).exec(function (err, result) {
+                promise.fulfill({
+                    $: 'request.result',
+                    result: result.map(function (p) {
+                        return {
+                            id: p._id,
+                            project: {
+                                name: p.name,
+                                thumbnail: p.thumbnail
+                            }
+                        }
+                    })
+                });
+            });
+        },
         /**
          * Queries the categories and forums in the Amber forums.
          *
@@ -593,7 +676,7 @@ extend(Client.prototype, {
                         }
                     });
                 } else {
-                    promise.reject('Not found');
+                    promise.reject(Errors.NOT_FOUND);
                 }
             });
         },
@@ -624,7 +707,7 @@ extend(Client.prototype, {
                         })
                     });
                 } else {
-                    promise.reject('Not found');
+                    promise.reject(Errors.NOT_FOUND);
                 }
             });
         },
@@ -637,16 +720,17 @@ extend(Client.prototype, {
             Topic.findById(packet.topic$id, function (err, topic) {
                 if (topic) {
                     var post = new Post();
-                    post.save(function (err) {
-                        topic.addPost(post);
-                        post.update(self.user, packet.body.trim(), null, function () {
+                    topic.addPost(post);
+                    post.edit(self.user.name, packet.body.trim());
+                    topic.save(function (err) {
+                        post.save(function (err) {
                             promise.fulfill({
                                 $: 'request.result'
                             });
-                        }); 
+                        });
                     });
                 } else {
-                    promise.reject('Not found');
+                    promise.reject(Errors.NOT_FOUND);
                 }
             });
         },
@@ -654,20 +738,21 @@ extend(Client.prototype, {
             var self = this;
             Post.findById(packet.post$id, function (err, post) {
                 if (post) {
-                    post.update(self.user, packet.body.trim(), packet.name, function () {
+                    post.edit(self.user.name, packet.body.trim(), packet.name);
+                    post.save(function (err) {
                         promise.fulfill({
                             $: 'request.result'
                         });
                     });
                 } else {
-                    promise.reject('Not found');
+                    promise.reject(Errors.NOT_FOUND);
                 }
             });
         },
         'request.forums.topic.add': function (packet, promise) {
             var self = this;
             if (!this.user) {
-                promise.reject('Not signed in');
+                promise.reject(Error.NO_PERMISSION);
                 return;
             }
             Forum.findById(packet.forum$id, function (err, forum) {
@@ -676,19 +761,11 @@ extend(Client.prototype, {
                         forum: packet.forum$id,
                         name: packet.name
                     });
-                    var post = new Post({
-                        isHead: true
-                    });
+                    var post = new Post();
                     topic.addPost(post);
-                    Async.parallel([
-                        function (cb) {
-                            topic.save(cb);
-                        },
-                        function (cb) {
-                            post.save(cb);
-                        }
-                    ], function (err) {
-                        post.update(self.user, packet.body.trim(), null, function () {
+                    post.edit(self.user.name, packet.body.trim());
+                    topic.save(function (err) {
+                        post.save(function (err) {
                             promise.fulfill({
                                 $: 'request.result',
                                 result: {
@@ -710,12 +787,13 @@ extend(Client.prototype, {
             Topic.findById(packet.topic$id, function (err, topic) {
                 if (topic) {
                     topic.views++;
-                    topic.save();
-                    promise.fulfill({
-                        $: 'request.result'
+                    topic.save(function (err) {
+                        promise.fulfill({
+                            $: 'request.result'
+                        });
                     });
                 } else {
-                    promise.reject('Not found');
+                    promise.reject(Errors.NOT_FOUND);
                 }
             });
         }
@@ -749,7 +827,11 @@ var ProjectSchema = Schema({
     created: {type: Date, default: Date.now},
     authors: [{type: String, ref: 'Users'}],
     notes: String,
-    versions: [String],
+    versions: [{
+        asset: String,
+        date: {type: Date, default: Date.now}
+    }],
+    modified: Date,
     thumbnail: String,
     views: {type: Number, default: 0},
     lovers: [{type: String, ref: 'User'}],
@@ -764,6 +846,7 @@ ProjectSchema.pre('save', function (next) {
     this.loves = this.lovers.length;
     this.remixCount = this.remixes.length;
     this.favorites = this.favoriters.length;
+    this.modified = this.newest.date;
     next();
 });
 ProjectSchema.virtual('newest').get(function () {
@@ -1311,18 +1394,93 @@ var UserSchema = Schema({
     favoriteProjects: [{type: ObjectId, red: 'Project'}],
     activity: []
 });
-
+UserSchema.virtual('name').get(function () {
+    return this._id;
+}).set(function (name) {
+    this._id = name;
+});
 extend(UserSchema.methods, {
     sendPacket: function (packet) {
         this.client.sendPacket(packet);
     },
-    setPassword: function (password, cb) {
+    setPassword: function (password) {
         this.salt = Crypto.randomBytes(20).toString('hex');
         this.passwordHash = Crypto.createHash('sha1').update(this.salt + password).digest('hex');
-        this.save(cb);
     },
     checkPassword: function (password) {
         return Crypto.createHash('sha1').update(this.salt + password).digest("hex") === this.passwordHash;
+    },
+    toggleFollowing: function (name, cb) {
+        var self = this;
+        User.findById(name, function (err, user) {
+            if (user) {
+                var following = self.following.indexOf(user.name) === -1;
+                if (following) {
+                    user.followers.addToSet(self.name);
+                    self.following.addToSet(user.name);
+                } else {
+                    user.followers.pull(self.name);
+                    self.following.pull(user.name);
+                }
+                self.save(function (err) {
+                    user.save(function (err) {
+                        cb(following);
+                    });
+                });
+            } else {
+                cb(null);
+            }
+        })
+    },
+    toggleLoveProject: function (project, cb) {
+        var self = this;
+        Project.findById(project, function (err, project) {
+            if (project) {
+                var love = project.lovers.indexOf(self.name) === -1;
+                var love;
+                if (love) {
+                    project.lovers.addToSet(self.name);
+                    self.lovedProjects.addToSet(project);
+                    love = true;
+                } else {
+                    project.lovers.pull(self.name);
+                    self.lovedProjects.pull(project);
+                    love = false;
+                }
+                self.save(function (err) {
+                    project.save(function (err) {
+                        cb(love);
+                    });
+                });
+            } else {
+                cb(null);
+            }
+        });
+    },
+    toggleFavoriteProject: function (project, cb) {
+        var self = this;
+        Project.findById(project, function (err, project) {
+            if (project) {
+                var i = project.favoriters.indexOf(self.name);
+                var favorite;
+                if (i === -1) {
+                    project.favoriters.addToSet(self.name);
+                    self.favoriteProjects.addToSet(project);
+                    favorite = true;
+                } else {
+                    project.favoriters.pull(self.name);
+                    self.favoriteProjects.pull(project);
+                    favorite = false;
+                }
+                self.save(function (err) {
+                    project.save(function (err) {
+                        cb(favorite);
+                    });
+                });
+            } else {
+                cb(null);
+            }
+        });
     },
     /*processPacket: function (packet) {
         try {
@@ -1420,8 +1578,8 @@ extend(UserSchema.methods, {
     },*/
     serialize: function () {
         return {
-            name: this._id,
-            group: this.group
+            name: this.name,
+            group: this.group || null
         };
     }
 });
@@ -1458,10 +1616,12 @@ TopicSchema.pre('save', function (next) {
     next();
 });
 extend(TopicSchema.methods, {
-    addPost: function (post, cb) {
+    addPost: function (post) {
         this.posts.push(post._id);
+        if (this.posts.length === 1) {
+            post.isHead = true;
+        }
         post.topic = this._id;
-        this.save();
     }
 });
 var Topic = mongoose.model('Topic', TopicSchema);
@@ -1470,7 +1630,7 @@ var PostSchema = Schema({
     _id: {type: Schema.ObjectId, auto: true},
     topic: {type: ObjectId, ref: 'Topic'},
     authors: [{type: String, ref: 'User'}],
-    isHead: Boolean,
+    isHead: {type: Boolean, default: false},
     versions: [{
         body: {type: String},
         author: {type: String, ref: 'User'},
@@ -1484,32 +1644,38 @@ PostSchema.virtual('newest').get(function () {
     return this.versions[this.versions.length - 1];
 });
 extend(PostSchema.methods, {
-    update: function (author, body, name, cb) {
-        var self = this;
+    addAuthor: function (author) {
+        if (this.authors.indexOf(author) === -1) {
+            this.authors.push(author);
+            this.$dirty = true;
+        }
+    },
+    edit: function (author, body, name) {
+        this.name = true;
         this.versions.push({
             author: author,
             body: body
         });
-        if (this.authors.indexOf(author) === -1) {
-            this.authors.push(author);
-        }
+        this.addAuthor(author);
+        this.$dirty = true;
+    }
+});
+PostSchema.pre('save', function (next) {
+    if (this.$dity) {
+        var self = this;
         Topic.findById(this.topic, function (err, topic) {
-            if (topic.posts[0].equals(self._id)) {
+            if (self.isHead) {
                 topic.authors = self.authors;
-                if (name) {
-                    topic.name = name;
+                if (self.name) {
+                    topic.name = self.name;
                 }
             }
             topic.modified = self.modified;
-            Async.parallel([
-                function (cb) {
-                    self.save(cb);
-                },
-                function (cb) {
-                    topic.save(cb);
-                }
-            ], cb);
+            topic.save(next);
         });
+        this.$dity = false;
+    } else {
+        next();
     }
 });
 var Post = mongoose.model('Post', PostSchema);
