@@ -109,13 +109,20 @@ var routes = [
     ['use', '/', Express.static('./public')]
 ];
 
+
+var clients = [];
+
+
 var Errors = {
     NOT_FOUND: 0,
-    NO_PERMISSION: 1
+    INCORRECT_CREDENTIALS: 1,
+    NO_PERMISSION: 2
 };
 
 function Client(connection) {
     this.connection = connection;
+    clients.push(this);
+    this.watching = [];
     connection.on('message', this.message.bind(this));
     connection.on('close', this.close.bind(this));
 }
@@ -161,7 +168,7 @@ extend(Client.prototype, {
         }
     },
     close: function () {
-        // TODO
+        clients.splice(clients.indexOf(this), 1);
     },
     sendPacket: function (packet) {
         this.connection.send(this.encodePacket(packet));
@@ -214,13 +221,56 @@ extend(Client.prototype, {
                 });
             }
         },
-
+        'watch.home.signedOut': function (packet, promise) {
+            var r = Async.parallel([
+                Project.count.bind(Project, {}),
+                Project.query.bind(null, {}, '-created', 0, 20, ['views']),
+                Project.query.bind(null, {}, '-remixCount', 0, 20, ['remixCount']),
+                Project.query.bind(null, {}, '-loves', 0, 20, ['loves']),
+                Project.query.bind(null, {}, '-views', 0, 20, ['views'])
+            ], function (err, results) {
+                promise.fulfill({
+                    $: 'result',
+                    result: {
+                        projectCount: results[0],
+                        featured: results[1],
+                        topRemixed: results[2],
+                        topLoved: results[3],
+                        topViewed: results[4]
+                    }
+                })
+            });
+        },
+        'watch.home.signedIn': function (packet, promise) {
+            var r = Async.parallel([
+                // activity
+                Project.query.bind(null, {}, '-modified', 0, 20, ['views']),
+                Project.query.bind(null, {authors: {$in: this.user.following}}, '-modified', 0, 20, ['authors']),
+                // lovedByFollowing
+                Project.query.bind(null, {}, '-remixCount', 0, 20, ['remixCount']),
+                Project.query.bind(null, {}, '-loves', 0, 20, ['loves']),
+                Project.query.bind(null, {}, '-views', 0, 20, ['views'])
+            ], function (err, results) {
+                promise.fulfill({
+                    $: 'result',
+                    result: {
+                        activity: [],
+                        featured: results[0],
+                        byFollowing: results[1],
+                        lovedByFollowing: [],
+                        topRemixed: results[2],
+                        topLoved: results[3],
+                        topViewed: result[4]
+                    }
+                })
+            });
+        },
         /**
          * Initiates a log in attempt.
          *
          * @param {string} username  the username
          */
-        'request.auth.signIn': function (packet, promise) {
+        'auth.signIn': function (packet, promise) {
             var self = this;
 
             User.findById(new RegExp('^' + RegExp.quote(packet.username) + '$', 'i'), function (err, user) {
@@ -230,8 +280,8 @@ extend(Client.prototype, {
                     user.session = self.session;
                     user.save();
                     promise.fulfill({
-                        $: 'auth.signIn.succeeded',
-                        user: user.serialize()
+                        $: 'result',
+                        result: user.serialize()
                     });
                 });
                 p.onReject(promise.reject);
@@ -245,7 +295,7 @@ extend(Client.prototype, {
                         method: 'POST'
                     }, function(res) {
                         if (res.statusCode === 403) {
-                            p.reject('Wrong password');
+                            p.reject(Errors.INCORRECT_CREDENTIALS);
                         } else {
                             function cb() {
                                 user.setPassword(packet.password);
@@ -272,12 +322,12 @@ extend(Client.prototype, {
         /**
          * Initiates a log out attempt.
          */
-        'request.auth.signOut': function (packet, promise) {
+        'auth.signOut': function (packet, promise) {
             if (this.user) {
                 this.user.session = null;
                 this.user.save(function (err) {
                     promise.fulfill({
-                        $: 'request.result'
+                        $: 'result'
                     });
                 });
                 this.user = null;
@@ -292,14 +342,21 @@ extend(Client.prototype, {
          *
          * @return {boolean}
          */
-        'request.user.follow': function (packet, promise) {
+        'user.follow': function (packet, promise) {
             if (this.user) {
                 this.user.toggleFollowing(packet.user, function (following) {
                     promise.fulfill({
-                        $: 'request.result',
+                        $: 'result',
                         result: following
                     });
                 });
+            } else {
+                promise.reject(Error.NO_PERMISSION);
+            }
+        },
+        'user.following': function (packet, promise) {
+            if (this.user) {
+                promise.fulfill(this.user.following.indexOf(packet.user) !== -1);
             } else {
                 promise.reject(Error.NO_PERMISSION);
             }
@@ -309,10 +366,10 @@ extend(Client.prototype, {
          *
          * @return {User?}
          */
-        'request.users.user': function (packet, promise) {
+        'users.user': function (packet, promise) {
             User.findById(new RegExp('^' + RegExp.quote(packet.user) + '$', 'i'), function (err, user) {
                 promise.fulfill({
-                    $: 'request.result',
+                    $: 'result',
                     result: user.serialize()
                 });
             });
@@ -324,11 +381,11 @@ extend(Client.prototype, {
          *
          * @return {Project}
          */
-        'request.project': function (packet, promise) {
+        'project': function (packet, promise) {
             Project.findById(packet.project$id, function (err, project) {
                 if (project) {
                     promise.fulfill({
-                        $: 'request.result',
+                        $: 'result',
                         result: project.serialize()
                     });
                 } else {
@@ -343,36 +400,14 @@ extend(Client.prototype, {
          *
          * @return {boolean}
          */
-        'request.project.love': function (packet, promise) {
+        'project.love': function (packet, promise) {
             if (this.user) {
                 this.user.toggleLoveProject(packet.project$id, function (love) {
                     if (love === null) {
                         promise.reject(Errors.NOT_FOUND);
                     } else {
                         promise.fulfill({
-                            $: 'request.result'
-                        });
-                    }
-                });
-            } else {
-                promise.reject(Errors.NO_PERMISSION);
-            }
-        },
-        /**
-         * Toggles whether the user favorites the given project.
-         *
-         * @param {objectId} project$id  the project
-         *
-         * @return {boolean}
-         */
-        'request.project.favorite': function (packet, promise) {
-            if (this.user) {
-                this.user.toggleFavoriteProject(packet.project$id, function (love) {
-                    if (love === null) {
-                        promise.reject(Errors.NOT_FOUND);
-                    } else {
-                        promise.fulfill({
-                            $: 'request.result'
+                            $: 'result'
                         });
                     }
                 });
@@ -385,10 +420,10 @@ extend(Client.prototype, {
          *
          * @return {unsigned}
          */
-        'request.projects.count': function (packet, promise) {
+        'projects.count': function (packet, promise) {
             Project.count(function (err, count) {
                 promise.fulfill({
-                    $: 'request.result',
+                    $: 'result',
                     result: count
                 });
             });
@@ -401,11 +436,11 @@ extend(Client.prototype, {
          *
          * @return {(subset of Project)[]}
          */
-        'request.projects.featured': function (packet, promise) {
+        'projects.featured': function (packet, promise) {
             // TODO: Replace with collection view
             Project.find().skip(packet.offset).limit(packet.length).exec(function (err, result) {
                 promise.fulfill({
-                    $: 'request.result',
+                    $: 'result',
                     result: result.map(function (p) {
                         return {
                             id: p._id,
@@ -427,10 +462,10 @@ extend(Client.prototype, {
          *
          * @return {(subset of Project)[]}
          */
-        'request.projects.topLoved': function (packet, promise) {
+        'projects.topLoved': function (packet, promise) {
             Project.find().sort('-loves').skip(packet.offset).limit(packet.length).exec(function (e, result) {
                 promise.fulfill({
-                    $: 'request.result',
+                    $: 'result',
                     result: result.map(function (p) {
                         return {
                             id: p._id,
@@ -452,10 +487,10 @@ extend(Client.prototype, {
          *
          * @return {(subset of Project)[]}
          */
-        'request.projects.topViewed': function (packet, promise) {
+        'projects.topViewed': function (packet, promise) {
             Project.find().sort('-views').skip(packet.offset).limit(packet.length).exec(function (err, result) {
                 promise.fulfill({
-                    $: 'request.result',
+                    $: 'result',
                     result: result.map(function (p) {
                         return {
                             id: p.id,
@@ -477,10 +512,10 @@ extend(Client.prototype, {
          *
          * @return {(subset of Project)[]}
          */
-        'request.projects.topRemixed': function (packet, promise) {
+        'projects.topRemixed': function (packet, promise) {
             Project.find().sort('-remixCount').skip(packet.offset).limit(packet.length).populate('remixes').exec(function (e, result) {
                 promise.fulfill({
-                    $: 'request.result',
+                    $: 'result',
                     result: result.map(function (p) {
                         return {
                             id: p._id,
@@ -503,7 +538,7 @@ extend(Client.prototype, {
          *
          * @return {(subset of Project)[]}
          */
-        'request.projects.lovedByFollowing': function (packet, promise) {
+        'projects.lovedByFollowing': function (packet, promise) {
             if (this.user) {
                 
             } else {
@@ -518,11 +553,11 @@ extend(Client.prototype, {
          *
          * @return {(subset of Project)[]}
          */
-        'request.projects.user.byFollowing': function (packet, promise) {
+        'projects.user.byFollowing': function (packet, promise) {
             if (this.user) {
                 Project.find({authors: {$in: this.user.following}}).sort('-modified').skip(packet.offset).limit(packet.length).exec(function (err, projects) {
                     promise.fulfill({
-                        $: 'request.result',
+                        $: 'result',
                         result: projects.map(function (p) {
                             return {
                                 id: p._id,
@@ -539,10 +574,10 @@ extend(Client.prototype, {
                 promise.reject(Error.NO_PERMISSION);
             }
         },
-        'request.projects.byUser': function (packet, promise) {
+        'projects.byUser': function (packet, promise) {
             Project.find({authors: packet.user}).sort('-modified').skip(packet.offset).limit(packet.length).exec(function (err, result) {
                 promise.fulfill({
-                    $: 'request.result',
+                    $: 'result',
                     result: result.map(function (p) {
                         return {
                             id: p._id,
@@ -562,10 +597,10 @@ extend(Client.prototype, {
          *
          * @return {ForumCategory[]}
          */
-        'request.forums.categories': function (packet, promise) {
+        'forums.categories': function (packet, promise) {
             ForumCategory.find().populate('forums').exec(function (err, result) {
                 promise.fulfill({
-                    $: 'request.result',
+                    $: 'result',
                     result: result.map(function (category) {
                         return {
                             name: {$: category.name},
@@ -590,10 +625,10 @@ extend(Client.prototype, {
          *
          * @return {Forum}
          */
-        'request.forums.forum': function (packet, promise) {
+        'forums.forum': function (packet, promise) {
             Forum.findById(packet.forum$id, function (err, forum) {
                 promise.fulfill({
-                    $: 'request.result',
+                    $: 'result',
                     result: {
                         id: forum._id,
                         name: {$: forum.name},
@@ -614,10 +649,10 @@ extend(Client.prototype, {
          *
          * @return {Topic[]}
          */
-        'request.forums.topics': function (packet, promise) {
+        'forums.topics': function (packet, promise) {
             Topic.find({forum: packet.forum$id}).sort('-modified').skip(packet.offset).limit(packet.length).exec(function (err, topics) {
                 promise.fulfill({
-                    $: 'request.result',
+                    $: 'result',
                     result: topics.map(function (topic) {
                         return {
                             id: topic._id,
@@ -638,11 +673,11 @@ extend(Client.prototype, {
          *
          * @return {Topic}
          */
-        'request.forums.topic': function (packet, promise) {
+        'forums.topic': function (packet, promise) {
             Topic.findById(packet.topic$id, function (err, topic) {
                 if (topic) {
                     promise.fulfill({
-                        $: 'request.result',
+                        $: 'result',
                         result: {
                             id: topic._id,
                             authors: topic.authors,
@@ -667,12 +702,12 @@ extend(Client.prototype, {
          *
          * @return {Post[]}
          */
-        'request.forums.posts': function (packet, promise) {
+        'forums.posts': function (packet, promise) {
             Topic.findById(packet.topic$id).populate('posts').exec(function (err, topic) {
                 if (topic) {
                     var posts = topic.posts.slice(packet.offset, packet.offset + packet.length);
                     promise.fulfill({
-                        $: 'request.result',
+                        $: 'result',
                         result: posts.map(function (post) {
                             return {
                                 id: post._id,
@@ -688,7 +723,7 @@ extend(Client.prototype, {
                 }
             });
         },
-        'request.forums.post.add': function (packet, promise) {
+        'forums.post.add': function (packet, promise) {
             var self = this;
             if (!this.user) {
                 promise.reject('Not signed in');
@@ -702,7 +737,7 @@ extend(Client.prototype, {
                     topic.save(function (err) {
                         post.save(function (err) {
                             promise.fulfill({
-                                $: 'request.result'
+                                $: 'result'
                             });
                         });
                     });
@@ -711,14 +746,14 @@ extend(Client.prototype, {
                 }
             });
         },
-        'request.forums.post.edit': function (packet, promise) {
+        'forums.post.edit': function (packet, promise) {
             var self = this;
             Post.findById(packet.post$id, function (err, post) {
                 if (post) {
                     post.edit(self.user.name, packet.body.trim(), packet.name);
                     post.save(function (err) {
                         promise.fulfill({
-                            $: 'request.result'
+                            $: 'result'
                         });
                     });
                 } else {
@@ -726,7 +761,7 @@ extend(Client.prototype, {
                 }
             });
         },
-        'request.forums.topic.add': function (packet, promise) {
+        'forums.topic.add': function (packet, promise) {
             var self = this;
             if (!this.user) {
                 promise.reject(Error.NO_PERMISSION);
@@ -744,7 +779,7 @@ extend(Client.prototype, {
                     topic.save(function (err) {
                         post.save(function (err) {
                             promise.fulfill({
-                                $: 'request.result',
+                                $: 'result',
                                 result: {
                                     topic$id: topic._id,
                                     post$id: post._id
@@ -754,19 +789,19 @@ extend(Client.prototype, {
                     });
                 } else {
                     promise.fulfill({
-                        $: 'request.error',
+                        $: 'error',
                         code: 0
                     });
                 }
             });
         },
-        'request.forums.topic.view': function (packet, promise) {
+        'forums.topic.view': function (packet, promise) {
             Topic.findById(packet.topic$id, function (err, topic) {
                 if (topic) {
                     topic.views++;
                     topic.save(function (err) {
                         promise.fulfill({
-                            $: 'request.result'
+                            $: 'result'
                         });
                     });
                 } else {

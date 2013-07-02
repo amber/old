@@ -2,50 +2,53 @@ var sb = require('./sb.js').sb;
 var assets = require('./assets.js');
 
 var refactoring = (function () {
-    function s(relative, property, value) {
-        return [relative ? 'changeVar:by:' : 'setVar:to:', {$: property}, value];
+    function s(property, value) {
+        return ['setVar:to:', {$: property}, value];
+    }
+    function c(property, value) {
+        return ['changeVar:by:', {$: property}, value];
     }
     function r(property) {
         return ['readVariable', {$: property}];
     }
 
     return {
-        'timerReset': function (block) {return s(false, 'timer', 0);},
+        'timerReset': function (block) {return s('timer', 0);},
         'timer': function (block) {return r('timer');},
         
         'costumeIndex': function (block) {return r('costume #');},
         
-        'changeXposBy:': function (block) {return s(true, 'x position', block[1]);},
-        'changeYposBy:': function (block) {return s(true, 'y position', block[1]);},
+        'changeXposBy:': function (block) {return c('x position', block[1]);},
+        'changeYposBy:': function (block) {return c('y position', block[1]);},
         'xpos': function (block) {return r('x position');},
         'ypos': function (block) {return r('y position');},
-        'xpos:': function (block) {return s(false, 'x position', block[1]);},
-        'ypos:': function (block) {return s(false, 'y position', block[1]);},
+        'xpos:': function (block) {return s('x position', block[1]);},
+        'ypos:': function (block) {return s('y position', block[1]);},
         
-        'heading:': function (block) {return s(false, 'direction', block[1]);},
+        'heading:': function (block) {return s('direction', block[1]);},
         'heading': function (block) {return r('direction');},
         
-        'setGraphicEffect:to:': function (block) {return s(false, block[1] + ' effect', block[2]);},
-        'changeGraphicEffect:by:': function (block) {return s(true, block[1] + ' effect', block[2]);},
+        'setGraphicEffect:to:': function (block) {return s(block[1] + ' effect', block[2]);},
+        'changeGraphicEffect:by:': function (block) {return c(block[1] + ' effect', block[2]);},
         
-        'setVolumeTo:': function (block) {return s(false, 'volume', block[1]);},
+        'setVolumeTo:': function (block) {return s('volume', block[1]);},
         'volume': function (block) {return r('volume');},
         
         'mousePressed': function (block) {return r('mouse down?');},
         'mouseX': function (block) {return r('mouse x');},
         'mouseY': function (block) {return r('mouse y');},
         
-        'setSizeTo:': function (block) {return s(false, 'size', block[1]);},
-        'changeSizeBy:': function (block) {return s(true, 'size', block[1]);},
+        'setSizeTo:': function (block) {return s('size', block[1]);},
+        'changeSizeBy:': function (block) {return c('size', block[1]);},
         'size': function (block) {return r('size');},
         
         'doReturn': function (block) {return ['stopScripts', {$: 'this script'}];},
         'stopAll': function (block) {return ['stopScripts', {$: 'all'}]},
         
-        'penColor:': function (block) {return s(false, 'pen color', block[1]);},
-        'penSize:': function (block) {return s(false, 'pen size', block[1]);},
-        'setPenHueTo:': function (block) {return s(false, 'pen hue', block[1]);},
-        'setPenShadeTo:': function (block) {return s(false, 'pen lightness', block[1]);},
+        'penColor:': function (block) {return s('pen color', block[1]);},
+        'penSize:': function (block) {return s('pen size', block[1]);},
+        'setPenHueTo:': function (block) {return s('pen hue', block[1]);},
+        'setPenShadeTo:': function (block) {return s('pen lightness', block[1]);},
     };
 }) ();
 
@@ -53,17 +56,17 @@ var c = {
     project: function (obj) {
         var authors = {};
         var name = 'Untitled';
-        var parsed = obj.info.history.trim().split('\r').map(function (e) {
-            return e.trim().split('\t');
-        });
-        parsed.forEach(function(e) {
-            if (e[1] === 'share') {
-                authors[e[3]] = true;
+        var created = Date.now();
+        obj.info.history.split('\r').forEach(function(l) {
+            var match = /(\d+-\d+-\d+ \d+:\d+:\d+)\t(\w*)\t(\w*)\t(\w*)/.exec(l);
+            if (match[2] === 'share' && match[3]) {
+                created = Date.parse(match[1]);
+                authors[match[4]] = true;
             }
-            name = e[2];
+            name = match[3];
         });
         return [{
-            created: Date.parse(parsed[0][0]),
+            created: created,
             authors: Object.keys(authors),
             name: name,
             notes: obj.info.comment.replace(/\r/g, '\n'),
@@ -100,18 +103,12 @@ var c = {
     sprite: function (obj) {
         return {
             objName: obj.objName,
-            scripts: obj.scripts.map(function (script) {
-                return c.script(script);
-            }),
-            costumes: obj.costumes.map(function (costume) {
-                return c.costume(costume);
-            }),
+            scripts: obj.scripts.map(c.script),
+            costumes: obj.costumes.map(c.costume),
             currentCostumeIndex: obj.currentCostumeIndex,
-            sounds: obj.sounds.map(function (sound) {
-                return c.sound(sound);
-            }),
-            scratchX: obj.scratchX,
-            scratchY: obj.scratchY,
+            sounds: obj.sounds.map(c.sound),
+            x: obj.scratchX,
+            y: obj.scratchY,
             direction: obj.direction,
             rotationStyle: obj.rotationStyle,
             isDraggable: obj.isDraggable,
