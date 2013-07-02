@@ -5,6 +5,7 @@ var DEBUG_PACKETS = true;
 var WebSocket = require('websocket'),
     HTTP = require('http'),
     Crypto = require('crypto'),
+    Domain = require('domain'),
     FS = require('fs'),
     URL = require('url'),
     Express = require('express'),
@@ -39,6 +40,19 @@ function extend(base) {
 }
 
 var routes = [
+    ['use', function(req, res, next) {
+        var domain = Domain.create();
+
+        domain.on('error', function(err) {
+            // alternative: next(err)
+            res.statusCode = 500;
+            res.end(err.message + '\n');
+
+            domain.dispose();
+        });
+
+        domain.run(next);
+    }],
     ['use', Express.methodOverride()],
     ['use', function(req, res, next) {
         res.header('Access-Control-Allow-Origin', '*');
@@ -160,12 +174,26 @@ extend(Client.prototype, {
         return JSON.stringify(tuple);
     },
     message: function (m) {
-        if (m.type === 'utf8') {
-            var packet = this.decodePacket(m.utf8Data);
-            if (packet) {
-                this.processPacket(packet);
+        var self = this;
+        var domain = Domain.create();
+        
+        domain.on('error', function(err) {
+            self.sendPacket({
+                $: 'error',
+                name: err.name,
+                message: err.message,
+                stack: err.stack
+            });
+        });
+        domain.add(this.connection);
+        domain.run(function () {
+            if (m.type === 'utf8') {
+                var packet = self.decodePacket(m.utf8Data);
+                if (packet) {
+                    self.processPacket(packet);
+                }
             }
-        }
+        });
     },
     close: function () {
         clients.splice(clients.indexOf(this), 1);
@@ -242,7 +270,7 @@ extend(Client.prototype, {
             });
         },
         'watch.home.signedIn': function (packet, promise) {
-            var r = Async.parallel([
+            Async.parallel([
                 // activity
                 Project.query.bind(null, {}, '-modified', 0, 20, ['views']),
                 Project.query.bind(null, {authors: {$in: this.user.following}}, '-modified', 0, 20, ['authors']),
@@ -260,11 +288,27 @@ extend(Client.prototype, {
                         lovedByFollowing: [],
                         topRemixed: results[2],
                         topLoved: results[3],
-                        topViewed: result[4]
+                        topViewed: results[4]
                     }
                 })
             });
         },
+        /*'watch.project': function (packet, promise) {
+            project: 
+            title: String,
+            isSubscribed: Boolean,
+            authors: [String],
+            notes: String,
+            tags: [String],
+            viewCount: Number,
+            loveCount: Number,
+            remixCount: Number,
+            isLoved: Boolean,
+            activity: [Event], // first 30 items
+            collections: [Collection], // first 20 items
+            topic$id: objectId,
+            posts: [Post] // first 20 items
+        },*/
         /**
          * Initiates a log in attempt.
          *
@@ -816,14 +860,6 @@ extend(Client.prototype, {
 function createPacket(type, object) {
     object.$ = type;
     return JSON.stringify(encodePacket(object));
-}
-
-function sendPacket(packet, exclude) {
-    for (var i in amber.clients) {
-        if (amber.clients[i] !== exclude) {
-            amber.clients[i].sendPacket(packet);
-        }
-    }
 }
 
 function openProjectFromData(data) {
