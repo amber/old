@@ -252,10 +252,10 @@ extend(Client.prototype, {
         'watch.home.signedOut': function (packet, promise) {
             var r = Async.parallel([
                 Project.count.bind(Project, {}),
-                Project.query.bind(null, {}, '-created', 0, 20, ['views']),
-                Project.query.bind(null, {}, '-remixCount', 0, 20, ['remixCount']),
-                Project.query.bind(null, {}, '-loves', 0, 20, ['loves']),
-                Project.query.bind(null, {}, '-views', 0, 20, ['views'])
+                Project.query.bind(Project, {}, '-created', 0, 20, ['views']),
+                Project.query.bind(Project, {}, '-remixCount', 0, 20, ['remixCount']),
+                Project.query.bind(Project, {}, '-loves', 0, 20, ['loves']),
+                Project.query.bind(Project, {}, '-views', 0, 20, ['views'])
             ], function (err, results) {
                 promise.fulfill({
                     $: 'result',
@@ -309,6 +309,101 @@ extend(Client.prototype, {
             topic$id: objectId,
             posts: [Post] // first 20 items
         },*/
+        'watch.forum': function (packet, promise) {
+            var self = this;
+            function watch() {
+                Schemas.watch('Forum', {_id: packet.forum$id}, {
+                    name: true,
+                    description: true,
+                    topics: [{
+                        id: true,
+                        name: true,
+                        authors: true,
+                        views: true,
+                        postCount: true
+                    }]
+                }, function (id, changes) {
+                    self.sendPacket({
+                        $: 'result',
+                        //request$id: packet.request$id,
+                        result: changes
+                    });
+                });
+            }
+            Forum.findById(packet.forum$id, function (err, forum) {
+                if (!forum) {
+                    promise.reject(Errors.NOT_FOUND);
+                    return;
+                }
+                forum.getTopics(0, 20, function (topics) {
+                    promise.fulfill({
+                        $: 'result',
+                        result: {
+                            name: {$: forum.name},
+                            description: {$: forum.description},
+                            topics: topics.map(function (topic) {
+                                return {
+                                    id: topic._id,
+                                    name: topic.name,
+                                    authors: topic.authors,
+                                    views: topic.views,
+                                    posts: topic.posts.length
+                                };
+                            })
+                        }
+                    });
+                    watch();
+                });
+            });
+        },
+        'watch.topic': function (packet, promise) {
+            var self = this;
+            Topic.findById(packet.topic$id).exec(function (err, topic) {
+                if (!topic) {
+                    promise.reject(Errors.NOT_FOUND);
+                    return;
+                }
+                topic.views++;
+                topic.save(function (err) {
+                    topic.getPosts(0, 20, function (posts) {
+                        promise.fulfill({
+                            $: 'result',
+                            result: {
+                                forum$id: topic.forum,
+                                name: topic.name,
+                                views: topic.views,
+                                isSubscribed: false,
+                                posts: posts.map(function (post) {
+                                    return {
+                                        id: post._id,
+                                        authors: post.authors,
+                                        body: post.body,
+                                        created: post.created,
+                                        modified: post.modified
+                                    };
+                                })
+                            }
+                        });
+                    });
+                });
+                Schemas.watch('Topic', {_id: packet.topic$id}, {
+                    forum: true,
+                    name: true,
+                    views: true,
+                    posts: [{
+                        _id: true,
+                        body: true,
+                        modified: true
+                    }]
+                }, function (id, changes) {
+                    self.sendPacket({
+                        $: 'result',
+                        //request$id: packet.request$id,
+                        result: changes
+                    });
+                });
+            });
+        },
         /**
          * Initiates a log in attempt.
          *
@@ -395,14 +490,14 @@ extend(Client.prototype, {
                     });
                 });
             } else {
-                promise.reject(Error.NO_PERMISSION);
+                promise.reject(Errors.NO_PERMISSION);
             }
         },
         'user.following': function (packet, promise) {
             if (this.user) {
                 promise.fulfill(this.user.following.indexOf(packet.user) !== -1);
             } else {
-                promise.reject(Error.NO_PERMISSION);
+                promise.reject(Errors.NO_PERMISSION);
             }
         },
         /**
@@ -586,7 +681,7 @@ extend(Client.prototype, {
             if (this.user) {
                 
             } else {
-                promise.reject(Error.NO_PERMISSION);
+                promise.reject(Errors.NO_PERMISSION);
             }
         },
         /**
@@ -615,7 +710,7 @@ extend(Client.prototype, {
                     });
                 });
             } else {
-                promise.reject(Error.NO_PERMISSION);
+                promise.reject(Errors.NO_PERMISSION);
             }
         },
         'projects.byUser': function (packet, promise) {
@@ -694,19 +789,25 @@ extend(Client.prototype, {
          * @return {Topic[]}
          */
         'forums.topics': function (packet, promise) {
-            Topic.find({forum: packet.forum$id}).sort('-modified').skip(packet.offset).limit(packet.length).exec(function (err, topics) {
-                promise.fulfill({
-                    $: 'result',
-                    result: topics.map(function (topic) {
-                        return {
-                            id: topic._id,
-                            name: topic.name,
-                            authors: topic.authors,
-                            views: topic.views,
-                            posts: topic.posts.length
-                        };
-                    })
-                });
+            Forum.findById(packet.forum$id, function (err, forum) {
+                if (forum) {
+                    forum.getTopics(packet.offset, packet.length, function (topics) {
+                        promise.fulfill({
+                            $: 'result',
+                            result: topics.map(function (topic) {
+                                return {
+                                    id: topic._id,
+                                    name: topic.name,
+                                    authors: topic.authors,
+                                    views: topic.views,
+                                    posts: topic.posts.length
+                                };
+                            })
+                        });
+                    });
+                } else {
+                    promise.reject(Errors.NOT_FOUND);
+                }
             });
         },
         /**
@@ -767,76 +868,93 @@ extend(Client.prototype, {
                 }
             });
         },
+        'forums.post.delete': function (packet, promise) {
+            var self = this;
+            Post.findById(packet.post$id, function (err, post) {
+                if (post) {
+                    if (post.authors.indexOf(self.user.name) > -1) {
+                        post.delete(promise.fulfill.bind(promise, {
+                            $: 'result'
+                        }));
+                    } else {
+                        promise.reject(Errors.NO_PERMISSION);
+                    }
+                } else {
+                    promise.reject(Errors.NOT_FOUND);
+                }
+            });
+        },
         'forums.post.add': function (packet, promise) {
             var self = this;
             if (!this.user) {
-                promise.reject('Not signed in');
+                promise.reject(Errors.NO_PERMISSION);
                 return;
             }
             Topic.findById(packet.topic$id, function (err, topic) {
-                if (topic) {
-                    var post = new Post();
-                    topic.addPost(post);
+                if (!topic) {
+                    promise.reject(Errors.NOT_FOUND);
+                    return;
+                }
+                var post = new Post();
+                topic.addPost(post, function (err) {
                     post.edit(self.user.name, packet.body.trim());
-                    topic.save(function (err) {
-                        post.save(function (err) {
+                    post.save(function (err) {
+                        topic.save(function (err) {
                             promise.fulfill({
                                 $: 'result'
                             });
                         });
                     });
-                } else {
-                    promise.reject(Errors.NOT_FOUND);
-                }
+                });
             });
         },
         'forums.post.edit': function (packet, promise) {
             var self = this;
             Post.findById(packet.post$id, function (err, post) {
-                if (post) {
-                    post.edit(self.user.name, packet.body.trim(), packet.name);
-                    post.save(function (err) {
-                        promise.fulfill({
-                            $: 'result'
-                        });
-                    });
-                } else {
+                if (!post) {
                     promise.reject(Errors.NOT_FOUND);
+                    return;
                 }
+                post.edit(self.user.name, packet.body.trim(), packet.name);
+                post.save(function (err) {
+                    promise.fulfill({
+                        $: 'result'
+                    });
+                });
             });
         },
         'forums.topic.add': function (packet, promise) {
             var self = this;
             if (!this.user) {
-                promise.reject(Error.NO_PERMISSION);
+                promise.reject(Errors.NO_PERMISSION);
                 return;
             }
             Forum.findById(packet.forum$id, function (err, forum) {
-                if (forum) {
-                    var topic = new Topic({
-                        forum: packet.forum$id,
-                        name: packet.name
-                    });
-                    var post = new Post();
-                    topic.addPost(post);
+                if (!forum) {
+                    promise.reject(Errors.NOT_FOUND);
+                    return;
+                }
+                var topic = new Topic({
+                    name: packet.name
+                });
+                forum.addTopic(topic);
+                var post = new Post();
+                topic.addPost(post, function (err) {
                     post.edit(self.user.name, packet.body.trim());
-                    topic.save(function (err) {
-                        post.save(function (err) {
-                            promise.fulfill({
-                                $: 'result',
-                                result: {
-                                    topic$id: topic._id,
-                                    post$id: post._id
-                                }
-                            });
+                    Async.parallel([
+                        forum.save.bind(forum),
+                        topic.save.bind(topic),
+                        post.save.bind(post)
+                    ], function (err) {
+                        promise.fulfill({
+                            $: 'result',
+                            result: {
+                                topic$id: topic._id,
+                                post$id: post._id
+                            }
                         });
                     });
-                } else {
-                    promise.fulfill({
-                        $: 'error',
-                        code: 0
-                    });
-                }
+                });
             });
         },
         'forums.topic.view': function (packet, promise) {
