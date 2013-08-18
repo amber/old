@@ -136,13 +136,22 @@ var Errors = {
 function Client(connection) {
     this.connection = connection;
     clients.push(this);
-    this.watching = [];
+    this.watchers = [];
     connection.on('message', this.message.bind(this));
     connection.on('close', this.close.bind(this));
 }
 
 extend(Client.prototype, {
     packetTuples: {}, // TODO: Add for deploy version
+    watch: function (watcher) {
+        this.watchers.push(watcher);
+    },
+    unwatchAll: function () {
+        this.watchers.forEach(function (watcher) {
+            Schemas.unwatch(watcher);
+        });
+        this.watchers = [];
+    },
     decodePacket: function (string) {
         var tuple = JSON.parse(string);
         if (!Array.isArray(tuple)) {
@@ -196,6 +205,7 @@ extend(Client.prototype, {
         });
     },
     close: function () {
+        this.unwatchAll();
         clients.splice(clients.indexOf(this), 1);
     },
     sendPacket: function (packet) {
@@ -250,6 +260,7 @@ extend(Client.prototype, {
             }
         },
         'watch.home.signedOut': function (packet, promise) {
+            this.unwatchAll();
             var r = Async.parallel([
                 Project.count.bind(Project, {}),
                 Project.query.bind(Project, {}, '-created', 0, 20, ['views']),
@@ -270,14 +281,15 @@ extend(Client.prototype, {
             });
         },
         'watch.home.signedIn': function (packet, promise) {
+            this.unwatchAll();
             Async.parallel([
                 // activity
-                Project.query.bind(null, {}, '-modified', 0, 20, ['views']),
-                Project.query.bind(null, {authors: {$in: this.user.following}}, '-modified', 0, 20, ['authors']),
+                Project.query.bind(Project, {}, '-modified', 0, 20, ['views']),
+                Project.query.bind(Project, {authors: {$in: this.user.following}}, '-modified', 0, 20, ['authors']),
                 // lovedByFollowing
-                Project.query.bind(null, {}, '-remixCount', 0, 20, ['remixCount']),
-                Project.query.bind(null, {}, '-loves', 0, 20, ['loves']),
-                Project.query.bind(null, {}, '-views', 0, 20, ['views'])
+                Project.query.bind(Project, {}, '-remixCount', 0, 20, ['remixCount']),
+                Project.query.bind(Project, {}, '-loves', 0, 20, ['loves']),
+                Project.query.bind(Project, {}, '-views', 0, 20, ['views'])
             ], function (err, results) {
                 promise.fulfill({
                     $: 'result',
@@ -310,9 +322,10 @@ extend(Client.prototype, {
             posts: [Post] // first 20 items
         },*/
         'watch.forum': function (packet, promise) {
+            this.unwatchAll();
             var self = this;
             function watch() {
-                Schemas.watch('Forum', {_id: packet.forum$id}, {
+                self.watch(Schemas.watch('Forum', {_id: packet.forum$id}, {
                     name: true,
                     description: true,
                     topics: [{
@@ -324,11 +337,10 @@ extend(Client.prototype, {
                     }]
                 }, function (id, changes) {
                     self.sendPacket({
-                        $: 'result',
-                        //request$id: packet.request$id,
-                        result: changes
+                        $: 'update',
+                        data: changes
                     });
-                });
+                }));
             }
             Forum.findById(packet.forum$id, function (err, forum) {
                 if (!forum) {
@@ -357,6 +369,7 @@ extend(Client.prototype, {
             });
         },
         'watch.topic': function (packet, promise) {
+            this.unwatchAll();
             var self = this;
             Topic.findById(packet.topic$id).exec(function (err, topic) {
                 if (!topic) {
@@ -384,22 +397,21 @@ extend(Client.prototype, {
                                 })
                             }
                         });
-                    });
-                });
-                Schemas.watch('Topic', {_id: packet.topic$id}, {
-                    forum: true,
-                    name: true,
-                    views: true,
-                    posts: [{
-                        _id: true,
-                        body: true,
-                        modified: true
-                    }]
-                }, function (id, changes) {
-                    self.sendPacket({
-                        $: 'result',
-                        //request$id: packet.request$id,
-                        result: changes
+                        self.watch(Schemas.watch('Topic', {_id: packet.topic$id}, {
+                            forum: true,
+                            name: true,
+                            views: true,
+                            posts: [{
+                                id: true,
+                                body: true,
+                                modified: true
+                            }]
+                        }, function (id, changes) {
+                            self.sendPacket({
+                                $: 'update',
+                                data: changes
+                            });
+                        }));
                     });
                 });
             });
@@ -411,7 +423,6 @@ extend(Client.prototype, {
          */
         'auth.signIn': function (packet, promise) {
             var self = this;
-
             User.findById(new RegExp('^' + RegExp.quote(packet.username) + '$', 'i'), function (err, user) {
                 var p = new Promise();
                 p.onFulfill(function (user) {
@@ -837,6 +848,37 @@ extend(Client.prototype, {
                 }
             });
         },
+        'forums.topic.add': function (packet, promise) {
+            var self = this;
+            if (!this.user) {
+                promise.reject(Errors.NO_PERMISSION);
+                return;
+            }
+            Forum.findById(packet.forum$id, function (err, forum) {
+                if (!forum) {
+                    promise.reject(Errors.NOT_FOUND);
+                    return;
+                }
+                var topic = new Topic();
+                forum.addTopic(topic);
+                var post = new Post();
+                topic.addPost(post);
+                post.edit(self.user.name, packet.body.trim(), topic, packet.name);
+                Async.series([
+                    post.save.bind(post),
+                    topic.save.bind(topic),
+                    forum.save.bind(forum)
+                ], function (err) {
+                    promise.fulfill({
+                        $: 'result',
+                        result: {
+                            topic$id: topic._id,
+                            post$id: post._id
+                        }
+                    });
+                });
+            });
+        },
         /**
          * Queries the list of posts in a topic.
          *
@@ -896,14 +938,14 @@ extend(Client.prototype, {
                     return;
                 }
                 var post = new Post();
-                topic.addPost(post, function (err) {
-                    post.edit(self.user.name, packet.body.trim());
-                    post.save(function (err) {
-                        topic.save(function (err) {
-                            promise.fulfill({
-                                $: 'result'
-                            });
-                        });
+                topic.addPost(post);
+                post.edit(self.user.name, packet.body.trim(), topic);
+                Async.series([
+                    post.save.bind(post),
+                    topic.save.bind(topic)
+                ], function (err) {
+                    promise.fulfill({
+                        $: 'result'
                     });
                 });
             });
@@ -915,44 +957,13 @@ extend(Client.prototype, {
                     promise.reject(Errors.NOT_FOUND);
                     return;
                 }
-                post.edit(self.user.name, packet.body.trim(), packet.name);
-                post.save(function (err) {
-                    promise.fulfill({
-                        $: 'result'
-                    });
-                });
-            });
-        },
-        'forums.topic.add': function (packet, promise) {
-            var self = this;
-            if (!this.user) {
-                promise.reject(Errors.NO_PERMISSION);
-                return;
-            }
-            Forum.findById(packet.forum$id, function (err, forum) {
-                if (!forum) {
-                    promise.reject(Errors.NOT_FOUND);
-                    return;
-                }
-                var topic = new Topic({
-                    name: packet.name
-                });
-                forum.addTopic(topic);
-                var post = new Post();
-                topic.addPost(post, function (err) {
-                    post.edit(self.user.name, packet.body.trim());
-                    Async.parallel([
-                        forum.save.bind(forum),
-                        topic.save.bind(topic),
-                        post.save.bind(post)
+                post.populate('topic', function (err) {
+                    post.edit(self.user.name, packet.body.trim(), post.topic, packet.name);
+                    Async.series([
+                        post.save.bind(post),
+                        topic.save.bind(topic)
                     ], function (err) {
-                        promise.fulfill({
-                            $: 'result',
-                            result: {
-                                topic$id: topic._id,
-                                post$id: post._id
-                            }
-                        });
+                        promise.fulfill({$: 'result'});
                     });
                 });
             });
