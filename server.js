@@ -371,6 +371,24 @@ extend(Client.prototype, {
         'watch.topic': function (packet, promise) {
             this.unwatchAll();
             var self = this;
+            function watch() {
+                self.watch(Schemas.watch('Topic', {_id: packet.topic$id}, {
+                    forum: true,
+                    name: true,
+                    views: true,
+                    posts: [{
+                        id: true,
+                        authors: true,
+                        body: true,
+                        modified: true
+                    }]
+                }, function (id, changes) {
+                    self.sendPacket({
+                        $: 'update',
+                        data: changes
+                    });
+                }));
+            }
             Topic.findById(packet.topic$id).exec(function (err, topic) {
                 if (!topic) {
                     promise.reject(Errors.NOT_FOUND);
@@ -397,21 +415,7 @@ extend(Client.prototype, {
                                 })
                             }
                         });
-                        self.watch(Schemas.watch('Topic', {_id: packet.topic$id}, {
-                            forum: true,
-                            name: true,
-                            views: true,
-                            posts: [{
-                                id: true,
-                                body: true,
-                                modified: true
-                            }]
-                        }, function (id, changes) {
-                            self.sendPacket({
-                                $: 'update',
-                                data: changes
-                            });
-                        }));
+                        watch();
                     });
                 });
             });
@@ -891,51 +895,47 @@ extend(Client.prototype, {
          */
         'forums.posts': function (packet, promise) {
             Topic.findById(packet.topic$id).populate('posts').exec(function (err, topic) {
-                if (topic) {
-                    var posts = topic.posts.slice(packet.offset, packet.offset + packet.length);
-                    promise.fulfill({
-                        $: 'result',
-                        result: posts.map(function (post) {
-                            return {
-                                id: post._id,
-                                authors: post.authors,
-                                body: post.newest.body,
-                                created: post.created,
-                                modified: post.newest.date
-                            };
-                        })
-                    });
-                } else {
-                    promise.reject(Errors.NOT_FOUND);
+                if (!topic) {
+                    return promise.reject(Errors.NOT_FOUND);
                 }
+                var posts = topic.posts.slice(packet.offset, packet.offset + packet.length);
+                promise.fulfill({
+                    $: 'result',
+                    result: posts.map(function (post) {
+                        return {
+                            id: post._id,
+                            authors: post.authors,
+                            body: post.newest.body,
+                            created: post.created,
+                            modified: post.newest.date
+                        };
+                    })
+                });
             });
         },
         'forums.post.delete': function (packet, promise) {
             var self = this;
             Post.findById(packet.post$id, function (err, post) {
-                if (post) {
-                    if (post.authors.indexOf(self.user.name) > -1) {
-                        post.delete(promise.fulfill.bind(promise, {
-                            $: 'result'
-                        }));
-                    } else {
-                        promise.reject(Errors.NO_PERMISSION);
-                    }
+                if (!post) {
+                    return promise.reject(Errors.NOT_FOUND);
+                }
+                if (post.authors.indexOf(self.user.name) > -1) {
+                    post.delete(promise.fulfill.bind(promise, {
+                        $: 'result'
+                    }));
                 } else {
-                    promise.reject(Errors.NOT_FOUND);
+                    promise.reject(Errors.NO_PERMISSION);
                 }
             });
         },
         'forums.post.add': function (packet, promise) {
             var self = this;
             if (!this.user) {
-                promise.reject(Errors.NO_PERMISSION);
-                return;
+                return promise.reject(Errors.NO_PERMISSION);
             }
             Topic.findById(packet.topic$id, function (err, topic) {
                 if (!topic) {
-                    promise.reject(Errors.NOT_FOUND);
-                    return;
+                    return promise.reject(Errors.NOT_FOUND);
                 }
                 var post = new Post();
                 topic.addPost(post);
@@ -952,34 +952,18 @@ extend(Client.prototype, {
         },
         'forums.post.edit': function (packet, promise) {
             var self = this;
-            Post.findById(packet.post$id, function (err, post) {
+            Post.findById(packet.post$id).populate('topic').exec(function (err, post) {
                 if (!post) {
-                    promise.reject(Errors.NOT_FOUND);
-                    return;
+                    return promise.reject(Errors.NOT_FOUND);
                 }
-                post.populate('topic', function (err) {
-                    post.edit(self.user.name, packet.body.trim(), post.topic, packet.name);
-                    Async.series([
-                        post.save.bind(post),
-                        topic.save.bind(topic)
-                    ], function (err) {
-                        promise.fulfill({$: 'result'});
-                    });
+                var topic = post.topic;
+                post.edit(self.user.name, packet.body.trim(), topic, packet.name);
+                Async.series([
+                    post.save.bind(post),
+                    topic.save.bind(topic)
+                ], function (err) {
+                    promise.fulfill({$: 'result'});
                 });
-            });
-        },
-        'forums.topic.view': function (packet, promise) {
-            Topic.findById(packet.topic$id, function (err, topic) {
-                if (topic) {
-                    topic.views++;
-                    topic.save(function (err) {
-                        promise.fulfill({
-                            $: 'result'
-                        });
-                    });
-                } else {
-                    promise.reject(Errors.NOT_FOUND);
-                }
             });
         }
     }
