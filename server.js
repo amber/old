@@ -868,6 +868,7 @@ extend(Client.prototype, {
                 var post = new Post();
                 topic.addPost(post);
                 post.edit(self.user.name, packet.body.trim(), topic, packet.name);
+                topic.modified = post.modified;
                 Async.series([
                     post.save.bind(post),
                     topic.save.bind(topic),
@@ -940,12 +941,14 @@ extend(Client.prototype, {
                 var post = new Post();
                 topic.addPost(post);
                 post.edit(self.user.name, packet.body.trim(), topic);
+                topic.modified = post.modified;
                 Async.series([
                     post.save.bind(post),
                     topic.save.bind(topic)
                 ], function (err) {
                     promise.fulfill({
-                        $: 'result'
+                        $: 'result',
+                        result: post._id
                     });
                 });
             });
