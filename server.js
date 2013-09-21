@@ -333,7 +333,7 @@ extend(Client.prototype, {
                         name: true,
                         authors: true,
                         views: true,
-                        postCount: true
+                        posts: 'postCount'
                     }]
                 }, function (id, changes) {
                     self.sendPacket({
@@ -347,7 +347,7 @@ extend(Client.prototype, {
                     promise.reject(Errors.NOT_FOUND);
                     return;
                 }
-                forum.getTopics(0, 20, function (topics) {
+                forum.getTopics(packet.offset || 0, 20, function (topics) {
                     promise.fulfill({
                         $: 'result',
                         result: {
@@ -396,7 +396,7 @@ extend(Client.prototype, {
                 }
                 topic.views++;
                 topic.save(function (err) {
-                    topic.getPosts(0, 20, function (posts) {
+                    topic.getPosts(packet.offset || 0, 20, function (posts) {
                         promise.fulfill({
                             $: 'result',
                             result: {
