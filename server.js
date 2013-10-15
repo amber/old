@@ -15,6 +15,8 @@ var WebSocket = require('websocket'),
     sbIO = require('./sbio.js'),
     Assets = require('./lib/assets.js'),
     Schemas = require('./lib/schemas.js'),
+    Serialize = require('./lib/serializer.js'),
+    ScratchAPI = require('./lib/scratchapi.js'),
     User = Schemas.User,
     Project = Schemas.Project,
     ForumCategory = Schemas.ForumCategory,
@@ -42,15 +44,12 @@ function extend(base) {
 var routes = [
     ['use', function(req, res, next) {
         var domain = Domain.create();
-
         domain.on('error', function(err) {
-            // alternative: next(err)
             res.statusCode = 500;
             res.end(err.message + '\n');
 
             domain.dispose();
         });
-
         domain.run(next);
     }],
     ['use', Express.methodOverride()],
@@ -59,7 +58,7 @@ var routes = [
         res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE');
         res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
-        if ('OPTIONS' === req.method) {
+        if (req.method === 'OPTIONS') {
             res.send(200);
         } else {
             next();
@@ -69,11 +68,10 @@ var routes = [
         Assets.get(req.params.hash, function (data) {
             if (data) {
                 res.header('Cache-Control', 'max-age=31557600, public');
-                res.end(data);
             } else {
                 res.statusCode = 404;
-                res.end();
             }
+            res.end(data || '');
         });
     }],
     ['post', '/api/assets', function (req, res) {
@@ -103,12 +101,12 @@ var routes = [
         });
     }],
     ['get', '/api/projects/:pk/:v', function (req, res) {
-        ProjectInfo.fromID(Number(req.params.pk), function (project) {
+        Project.findById(req.params.pk, function (err, project) {
             if (project) {
-                project.loadVersion(req.params.v, function (data) {
+                project.load(req.params.v, function (data) {
                     if (data) {
                         res.statusCode = 200;
-                        res.end(JSON.stringify(project.toJSON(true)));
+                        res.end(JSON.stringify(project.serialize()));
                     } else {
                         res.statusCode = 404;
                         res.end();
@@ -128,8 +126,10 @@ var clients = [];
 
 
 var Errors = {
-    NOT_FOUND: 0,
-    INCORRECT_CREDENTIALS: 1,
+    notFound: 0,
+    auth: {
+        incorrectCredentials: 1
+    },
     NO_PERMISSION: 2
 };
 
@@ -220,7 +220,7 @@ extend(Client.prototype, {
         }
         var promise = new Promise(function (err, response) {
             var response = (err === null) ? response : {
-                $: 'request.error',
+                $: 'requestError',
                 reason: err
             };
             if (packet.request$id) {
@@ -324,74 +324,53 @@ extend(Client.prototype, {
         'watch.forum': function (packet, promise) {
             this.unwatchAll();
             var self = this;
-            function watch() {
-                self.watch(Schemas.watch('Forum', {_id: packet.forum$id}, {
+            var schema = {
+                name: '$',
+                description: '$',
+                topics: [{
+                    id: true,
                     name: true,
-                    description: true,
-                    topics: [{
-                        id: true,
-                        name: true,
-                        authors: true,
-                        views: true,
-                        posts: 'postCount'
-                    }]
-                }, function (id, changes) {
-                    self.sendPacket({
-                        $: 'update',
-                        data: changes
-                    });
-                }));
-            }
+                    authors: true,
+                    views: true,
+                    posts: 'postCount'
+                }]
+            };
             Forum.findById(packet.forum$id, function (err, forum) {
                 if (!forum) {
-                    promise.reject(Errors.NOT_FOUND);
+                    promise.reject(Errors.notFound);
                     return;
                 }
                 forum.getTopics(packet.offset || 0, 20, function (topics) {
                     promise.fulfill({
                         $: 'result',
-                        result: {
-                            name: {$: forum.name},
-                            description: {$: forum.description},
-                            topics: topics.map(function (topic) {
-                                return {
-                                    id: topic._id,
-                                    name: topic.name,
-                                    authors: topic.authors,
-                                    views: topic.views,
-                                    posts: topic.posts.length
-                                };
-                            })
-                        }
+                        result: Serialize(forum, schema)
                     });
-                    watch();
+                    self.watch(Schemas.watch('Forum', {_id: packet.forum$id}, schema, function (id, changes) {
+                        self.sendPacket({
+                            $: 'update',
+                            data: changes
+                        });
+                    }));
                 });
             });
         },
         'watch.topic': function (packet, promise) {
             this.unwatchAll();
             var self = this;
-            function watch() {
-                self.watch(Schemas.watch('Topic', {_id: packet.topic$id}, {
-                    forum: true,
-                    name: true,
-                    views: true,
-                    posts: [{
-                        id: true,
-                        authors: true,
-                        body: true,
-                        modified: true
-                    }]
-                }, function (id, changes) {
-                    self.sendPacket({
-                        $: 'update',
-                        data: changes
-                    });
-                }));
-            }
+            var schema = {
+                forum: true,
+                name: true,
+                views: true,
+                posts: [{
+                    id: true,
+                    authors: true,
+                    body: true,
+                    modified: true
+                }]
+            };
             Topic.findById(packet.topic$id).exec(function (err, topic) {
                 if (!topic) {
-                    promise.reject(Errors.NOT_FOUND);
+                    promise.reject(Errors.notFound);
                     return;
                 }
                 topic.views++;
@@ -399,23 +378,14 @@ extend(Client.prototype, {
                     topic.getPosts(packet.offset || 0, 20, function (posts) {
                         promise.fulfill({
                             $: 'result',
-                            result: {
-                                forum$id: topic.forum,
-                                name: topic.name,
-                                views: topic.views,
-                                isSubscribed: false,
-                                posts: posts.map(function (post) {
-                                    return {
-                                        id: post._id,
-                                        authors: post.authors,
-                                        body: post.body,
-                                        created: post.created,
-                                        modified: post.modified
-                                    };
-                                })
-                            }
+                            result: Serialize(topic, schema)
                         });
-                        watch();
+                        self.watch(Schemas.watch('Topic', {_id: packet.topic$id}, schema, function (id, changes) {
+                            self.sendPacket({
+                                $: 'update',
+                                data: changes
+                            });
+                        }));
                     });
                 });
             });
@@ -438,38 +408,23 @@ extend(Client.prototype, {
                         result: user.serialize()
                     });
                 });
-                p.onReject(promise.reject);
+                p.onReject(promise.reject.bind(promise));
                 if (user && user.checkPassword(packet.password)) {
                     p.fulfill(user);
                 } else {
-                    HTTP.request({
-                        hostname: 'scratch.mit.edu',
-                        port: 80,
-                        path: '/login/',
-                        method: 'POST'
-                    }, function(res) {
-                        if (res.statusCode === 403) {
-                            p.reject(Errors.INCORRECT_CREDENTIALS);
+                    ScratchAPI(packet.username, packet.password, function (err, u) {
+                        if (err) {
+                            p.reject('auth.incorrectCredentials');
                         } else {
-                            function cb() {
-                                user.setPassword(packet.password);
-                                user.save(function (err) {
-                                    p.fulfill(user);
-                                });
+                            if (!user) {
+                                user = new User({_id: u.username});
                             }
-                            if (user) {
-                                cb();
-                            } else {
-                                get('scratch.mit.edu', '/site-api/users/all/' + packet.username + '/', function (data) {
-                                    user = new User({_id: JSON.parse(data).user.username});
-                                    cb();
-                                });
-                            }
+                            user.setPassword(packet.password);
+                            user.save(function (err) {
+                                p.fulfill(user);
+                            });
                         }
-                    }).end(JSON.stringify({
-                        username: packet.username,
-                        password: packet.password
-                    }));
+                    });
                 }
             });
         },
@@ -543,7 +498,7 @@ extend(Client.prototype, {
                         result: project.serialize()
                     });
                 } else {
-                    promise.reject(Errors.NOT_FOUND);
+                    promise.reject(Errors.notFound);
                 }
             });
         },
@@ -558,12 +513,24 @@ extend(Client.prototype, {
             if (this.user) {
                 this.user.toggleLoveProject(packet.project$id, function (love) {
                     if (love === null) {
-                        promise.reject(Errors.NOT_FOUND);
+                        promise.reject(Errors.notFound);
                     } else {
                         promise.fulfill({
                             $: 'result'
                         });
                     }
+                });
+            } else {
+                promise.reject(Errors.NO_PERMISSION);
+            }
+        },
+        'project.create': function (packet, promise) {
+            if (this.user) {
+                Project.create(this.user, function (project) {
+                    promise.fulfill({
+                        $: 'result',
+                        project$id: project._id
+                    })
                 });
             } else {
                 promise.reject(Errors.NO_PERMISSION);
@@ -821,7 +788,7 @@ extend(Client.prototype, {
                         });
                     });
                 } else {
-                    promise.reject(Errors.NOT_FOUND);
+                    promise.reject(Errors.notFound);
                 }
             });
         },
@@ -848,7 +815,7 @@ extend(Client.prototype, {
                         }
                     });
                 } else {
-                    promise.reject(Errors.NOT_FOUND);
+                    promise.reject(Errors.notFound);
                 }
             });
         },
@@ -860,7 +827,7 @@ extend(Client.prototype, {
             }
             Forum.findById(packet.forum$id, function (err, forum) {
                 if (!forum) {
-                    promise.reject(Errors.NOT_FOUND);
+                    promise.reject(Errors.notFound);
                     return;
                 }
                 var topic = new Topic();
@@ -897,7 +864,7 @@ extend(Client.prototype, {
         'forums.posts': function (packet, promise) {
             Topic.findById(packet.topic$id).populate('posts').exec(function (err, topic) {
                 if (!topic) {
-                    return promise.reject(Errors.NOT_FOUND);
+                    return promise.reject(Errors.notFound);
                 }
                 var posts = topic.posts.slice(packet.offset, packet.offset + packet.length);
                 promise.fulfill({
@@ -918,7 +885,7 @@ extend(Client.prototype, {
             var self = this;
             Post.findById(packet.post$id, function (err, post) {
                 if (!post) {
-                    return promise.reject(Errors.NOT_FOUND);
+                    return promise.reject(Errors.notFound);
                 }
                 if (post.authors.indexOf(self.user.name) > -1) {
                     post.delete(promise.fulfill.bind(promise, {
@@ -936,7 +903,7 @@ extend(Client.prototype, {
             }
             Topic.findById(packet.topic$id, function (err, topic) {
                 if (!topic) {
-                    return promise.reject(Errors.NOT_FOUND);
+                    return promise.reject(Errors.notFound);
                 }
                 var post = new Post();
                 topic.addPost(post);
@@ -957,7 +924,7 @@ extend(Client.prototype, {
             var self = this;
             Post.findById(packet.post$id).populate('topic').exec(function (err, post) {
                 if (!post) {
-                    return promise.reject(Errors.NOT_FOUND);
+                    return promise.reject(Errors.notFound);
                 }
                 var topic = post.topic;
                 post.edit(self.user.name, packet.body.trim(), topic, packet.name);
