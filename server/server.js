@@ -12,7 +12,7 @@ var WebSocket = require('websocket'),
     Async = require('async'),
     mongoose = require('mongoose'),
     Promise = require('mpromise'),
-    sbIO = require('./lib/sbio.js'),
+    //sbIO = require('./lib/sbio.js'),
     Assets = require('./lib/assets.js'),
     Schemas = require('./lib/schemas.js'),
     Serialize = require('./lib/serializer.js'),
@@ -118,7 +118,7 @@ var routes = [
             }
         });
     }],
-    ['use', '/', Express.static('./public')]
+    ['use', '/', Express.static('./client')]
 ];
 
 
@@ -218,8 +218,8 @@ extend(Client.prototype, {
             console.warn('Undefined packet', packet.$);
             return;
         }
-        var promise = new Promise(function (err, response) {
-            var response = (err === null) ? response : {
+        var promise = new Promise(function (err, res) {
+            var response = (err === null) ? res : {
                 $: 'requestError',
                 reason: err
             };
@@ -261,7 +261,7 @@ extend(Client.prototype, {
         },
         'watch.home.signedOut': function (packet, promise) {
             this.unwatchAll();
-            var r = Async.parallel([
+            Async.parallel([
                 Project.count.bind(Project, {}),
                 Project.query.bind(Project, {}, '-created', 0, 20, ['views']),
                 Project.query.bind(Project, {}, '-remixCount', 0, 20, ['remixCount']),
@@ -277,7 +277,7 @@ extend(Client.prototype, {
                         topLoved: results[3],
                         topViewed: results[4]
                     }
-                })
+                });
             });
         },
         'watch.home.signedIn': function (packet, promise) {
@@ -302,7 +302,7 @@ extend(Client.prototype, {
                         topLoved: results[3],
                         topViewed: results[4]
                     }
-                })
+                });
             });
         },
         /*'watch.project': function (packet, promise) {
@@ -530,7 +530,7 @@ extend(Client.prototype, {
                     promise.fulfill({
                         $: 'result',
                         project$id: project._id
-                    })
+                    });
                 });
             } else {
                 promise.reject(Errors.NO_PERMISSION);
@@ -570,7 +570,7 @@ extend(Client.prototype, {
                                 name: p.name,
                                 thumbnail: p.thumbnail
                             }
-                        }
+                        };
                     })
                 });
             });
@@ -595,7 +595,7 @@ extend(Client.prototype, {
                                 name: p.name,
                                 thumbnail: p.thumbnail
                             }
-                        }
+                        };
                     })
                 });
             });
@@ -620,7 +620,7 @@ extend(Client.prototype, {
                                 name: p.name,
                                 thumbnail: p.thumbnail
                             }
-                        }
+                        };
                     })
                 });
             });
@@ -645,7 +645,7 @@ extend(Client.prototype, {
                                 name: p.name,
                                 thumbnail: p.thumbnail
                             }
-                        }
+                        };
                     })
                 });
             });
@@ -682,12 +682,12 @@ extend(Client.prototype, {
                         result: projects.map(function (p) {
                             return {
                                 id: p._id,
-                                authors: this.authors,
+                                authors: p.authors,
                                 project: {
                                     name: p.name,
                                     thumbnail: p.thumbnail
                                 }
-                            }
+                            };
                         })
                     });
                 });
@@ -706,7 +706,7 @@ extend(Client.prototype, {
                                 name: p.name,
                                 thumbnail: p.thumbnail
                             }
-                        }
+                        };
                     })
                 });
             });
@@ -938,56 +938,6 @@ extend(Client.prototype, {
         }
     }
 });
-
-
-function createPacket(type, object) {
-    object.$ = type;
-    return JSON.stringify(encodePacket(object));
-}
-
-function openProjectFromData(data) {
-    sbIO.fromSB(data, function (project) {
-        var p = new Project();
-        p.name = project[0].name;
-        p.authors = project[0].authors;
-        p.notes = project[0].notes;
-        p.update(project[0].stage);
-        p.thumbnail = project[1];
-        p.save();
-    });
-}
-
-function openProject(cb, host, path) {
-    get(host, path, function (data) {
-        openProjectFromData(data);
-        cb();
-    }, true);
-}
-
-function openProjectOnScratch(cb, id) {
-    openProject(cb, 'scratch.mit.edu', 'http://scratch.mit.edu/static/projects/nXIII/' + id + '.sb');
-}
-
-/*FS.readFile('Pacman.sb', function (err, data) {
-    openProjectFromData(data);
-});*/
-
-(function () {
-    var l = [2516786, 2950693, 2911784, 2270221, 1198025, 1194155, 1089130, 1089026, 1053443, 1027607, 948434, 934410, 934092, 931538, 922876, 907445, 901773, 901587, 898571, 894247];
-    function cb(i) {
-        openProjectOnScratch(function () {
-            if (i + 1 < l.length) {
-                cb(i + 1);
-            } else {
-                console.log('Done!')
-            }
-        }, l[i]);
-        console.log("Loaded", i);
-    }
-    cb(8);
-}) //();
-
-
 
 function get(host, path, cb, binary) {
     HTTP.get({
