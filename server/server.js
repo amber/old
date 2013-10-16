@@ -185,7 +185,7 @@ extend(Client.prototype, {
     message: function (m) {
         var self = this;
         var domain = Domain.create();
-        
+
         domain.on('error', function(err) {
             self.sendPacket({
                 $: 'error',
@@ -306,7 +306,7 @@ extend(Client.prototype, {
             });
         },
         /*'watch.project': function (packet, promise) {
-            project: 
+            project:
             title: String,
             isSubscribed: Boolean,
             authors: [String],
@@ -529,7 +529,7 @@ extend(Client.prototype, {
                 Project.create(this.user, function (project) {
                     promise.fulfill({
                         $: 'result',
-                        project$id: project._id
+                        result: project._id
                     });
                 });
             } else {
@@ -661,7 +661,7 @@ extend(Client.prototype, {
          */
         'projects.lovedByFollowing': function (packet, promise) {
             if (this.user) {
-                
+
             } else {
                 promise.reject(Errors.NO_PERMISSION);
             }
