@@ -21,6 +21,8 @@ function watch(type, query, fields, cb) {
         var v = fields[field];
         if (v === true) {
             myfields[field] = true;
+        } else if (typeof v === 'string' && v !== '$') {
+            myfields[v] = true;
         } else if (Object.prototype.toString.call(v) === '[object Object]') {
             myfields[field] = v;
             var type = paths[field].options.type.ref,
