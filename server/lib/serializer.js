@@ -1,16 +1,3 @@
-/*
-    name: true,
-    description: true,
-    topics: [{
-        id: true,
-        name: true,
-        authors: true,
-        views: true,
-        posts: 'postCount'
-    }]
-*/
-
-
 function serialize(object, schema) {
     var out = {};
     for (var field in schema) {
