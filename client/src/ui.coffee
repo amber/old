@@ -366,12 +366,14 @@ class App extends Control
             tag = e.target.tagName
             return if tag is 'INPUT' or tag is 'TEXTAREA' or tag is 'SELECT'
 
-            while c and not c.acceptsClick
+            context = e.button is 2
+
+            while c and not (if context then c.acceptsContextMenu else c.acceptsClick)
                 return if c.selectable
                 c = c.parent
 
             return unless c
-            if e.button is 2
+            if context
                 c.dispatch 'ContextMenu', new TouchEvent().setMouseEvent e
                 return
             else
@@ -943,6 +945,19 @@ class Dialog extends Control
         @onUnlive ->
             window.removeEventListener 'resize', @layout
 
+        @element.addEventListener 'keydown', (e) =>
+            return if e.keyCode isnt 9
+
+            first = @firstFocusable()
+            last = @lastFocusable()
+
+            if e.target is first and e.shiftKey
+                last.focus()
+                e.preventDefault()
+            else if e.target is last and not e.shiftKey
+                first.focus()
+                e.preventDefault()
+
     show: (app) ->
         app.setLightboxEnabled(true).add(@)
         @layout()
@@ -953,15 +968,29 @@ class Dialog extends Control
         @parent.setLightboxEnabled(false).remove(@)
         @
 
-    focus: ->
+    firstFocusable: ->
         descend = (child) ->
-            tag = child.tagName
-            if tag is 'INPUT' or tag is 'BUTTON' or tag is 'TEXTAREA'
-                setTimeout -> child.focus()
-                return true
+            if child.tagName is 'INPUT' or child.tagName is 'BUTTON' or child.tagName is 'TEXTAREA' or child.tabIndex >= 0
+                return child
             for c in child.childNodes
-                return true if descend c
+                f = descend c
+                return f if f
         descend @element
+
+    lastFocusable: ->
+        descend = (child) ->
+            if child.tagName is 'INPUT' or child.tagName is 'BUTTON' or child.tagName is 'TEXTAREA' or child.tabIndex >= 0
+                return child
+            last = null
+            for c in child.childNodes
+                f = descend c
+                last = f if f
+            last
+        descend @element
+
+    focus: ->
+        f = @firstFocusable()
+        setTimeout(-> f.focus()) if f
         @
 
     layout: =>

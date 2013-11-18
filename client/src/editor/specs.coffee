@@ -120,12 +120,14 @@ specs =
     data: [
         ['&', 'createVariable', $:'Make a Variable']
         '-'
-        ['v', '']
+        'gv'
         '-'
-        ['vs', '']
-        ['vc', '']
-        ['c', 'data', 'showVariable:', 'show variable %m.var', '']
-        ['c', 'data', 'hideVariable:', 'hide variable %m.var', '']
+        'v'
+        '-'
+        ['vs']
+        ['vc']
+        ['c', 'data', 'showVariable:', 'show variable %m.var']
+        ['c', 'data', 'hideVariable:', 'hide variable %m.var']
         '-'
         ['c', 'lists', 'append:toList:', 'add %s to %m.list', $:'thing', '']
         '-'
@@ -154,8 +156,8 @@ specs =
     ]
     control:
         stage: [
-            ['r', 'system', 'commandClosure', '%m.parameters %slot.command']
-            ['r', 'system', 'reporterClosure', '%m.parameters %slot.reporter']
+            ['r', 'system', 'commandClosure', '%parameters %c']
+            ['r', 'system', 'reporterClosure', '%parameters %reporter']
             '-'
             ['c', 'control', 'wait:elapsed:from:', 'wait %f secs', 1]
             '-'
@@ -174,8 +176,8 @@ specs =
             ['t', 'control', 'deleteClone', 'delete this clone']
         ]
         sprite: [
-            ['r', 'system', 'commandClosure', '%parameters %slot:command']
-            ['r', 'system', 'reporterClosure', '%parameters %slot:reporter']
+            ['r', 'system', 'commandClosure', '%parameters %c']
+            ['r', 'system', 'reporterClosure', '%parameters %reporter']
             '-'
             ['c', 'control', 'wait:elapsed:from:', 'wait %f secs', 1]
             '-'
@@ -208,7 +210,7 @@ specs =
             '-'
             ['v', $:'loudness']
             '-'
-            ['r', 'sensing', 'senseVideoMotion', 'video %m.videoMotion on %m.stageOrThis']
+            ['r', 'sensing', 'senseVideoMotion', 'video %m.videoMotion on %m.stageOrThis', ($:'motion'), ($:'this sprite')]
             ['c', 'sensing', 'setVideoState', 'turn video %m.videoState', $:'on']
             ['c', 'sensing', 'setVideoTransparency', 'set video transparency to %f%', 50]
             '-'
@@ -232,7 +234,7 @@ specs =
             '-'
             ['v', $:'loudness']
             '-'
-            ['r', 'sensing', 'senseVideoMotion', 'video %m.videoMotion on %m.stageOrThis']
+            ['r', 'sensing', 'senseVideoMotion', 'video %m.videoMotion on %m.stageOrThis', ($:'motion'), ($:'this sprite')]
             ['c', 'sensing', 'setVideoState', 'turn video %m.videoState', $:'on']
             ['c', 'sensing', 'setVideoTransparency', 'set video transparency to %f%', 50]
             '-'
@@ -253,9 +255,9 @@ specs =
         '-'
         ['r', 'operators', 'randomFrom:to:', 'pick random %f to %f', 1, 10]
         '-'
-        ['r', 'operators', '<', '%s < %s']
-        ['r', 'operators', '=', '%s = %s']
-        ['r', 'operators', '>', '%s > %s']
+        ['b', 'operators', '<', '%s < %s']
+        ['b', 'operators', '=', '%s = %s']
+        ['b', 'operators', '>', '%s > %s']
         '-'
         ['b', 'operators', '&', '%b and %b']
         ['b', 'operators', '|', '%b or %b']
