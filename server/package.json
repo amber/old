@@ -3,13 +3,14 @@
   "version": "0.0.1",
   "dependencies": {
     "async": "~0.2.9",
-    "express": "~3.4.0",
-    "longjohn": "~0.2.1",
+    "express": "~3.4.4",
+    "longjohn": "~0.2.2",
     "node-native-zip": "~1.1.0",
     "mpromise": "~0.3.0",
     "websocket": "~1.0.8",
     "mongoose": "~3.6.20",
-    "canvas": "~1.1.1"
+    "canvas": "~1.1.1",
+    "shortid": "~2.0.0"
   },
   "engines": {
     "node": "0.8.x",

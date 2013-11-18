@@ -1,4 +1,190 @@
-function extend(base) {
+var mongoose = require('mongoose'),
+    Schema = mongoose.Schema,
+    ObjectId = Schema.ObjectId,
+    Client = require('./client.js'),
+    Watch = require('./watch.js'),
+    Topic = require('./forum/topic.js');
+
+
+var ProjectSchema = Schema({
+    _id: {type: ObjectId, auto: true},
+
+    name: {type: String, default: 'Untitled'},
+    authors: [{type: String, ref: 'User'}],
+    created: {type: Date, default: Date.now},
+    modified: Date,
+
+    thumbnail: String, // TODO: Default thumbnail
+    
+    notes: {type: String, default: ''},
+    tags: {type: [{type: ObjectId, ref: 'Tag'}], default: []},
+    
+    collections: {type: [{type: ObjectId, ref: 'Collection'}], default: []},
+    
+    topic: {type: ObjectId, ref: 'Topic', default: Topic.create},
+    
+    versions: {type: [{
+        asset: String,
+        date: {type: Date, default: Date.now}
+    }], default: [{
+        asset: null //TODO: Default project asset
+    }]},
+
+    views: {type: Number, default: 0},
+    lovers: {type: [{type: String, ref: 'User'}], default: []},
+    loves: Number,
+    parent: {type: ObjectId, ref: 'Project'},
+    children: {type: [{type: ObjectId, ref: 'Collection'}], default: []}
+}, {collection: 'AProject'});
+
+ProjectSchema.plugin(Watch.updateHooks);
+
+ProjectSchema.statics.create = function (user, cb) {
+    return new Project({});
+};
+
+ProjectSchema.pre('save', function (cb) {
+    this.loves = this.lovers.length;
+    this.modified = this.newest.date;
+    cb();
+});
+ProjectSchema.virtual('newest').get(function () {
+    return this.versions[this.versions.length - 1];
+})
+ProjectSchema.methods.serialize = function () {
+    return {
+        id: this.id,
+        name: this.name,
+        notes: this.notes,
+        authors: this.authors,
+        created: this.created,
+        loves: this.loves,
+        views: this.views,
+        latest: this.newest.asset,
+        modified: this.newest.date,
+        remixes: this.remixes
+    };
+};
+ProjectSchema.methods.load = function () {
+    var version,
+        cb;
+    if (arguments.length === 1) {
+        version = this.versions.length - 1;
+        cb = arguments[0];
+    } else {
+        version = arguments[0];
+        cb = arguments[1];
+    }
+    Assets.get(this.versions[version].asset, function (data) {
+        cb(data);
+    });
+};
+ProjectSchema.methods.update = function (data, cb) {
+    var versions = this.versions;
+    Assets.set(JSON.stringify(data), function (hash) {
+        versions.push(hash);
+    });
+};
+ProjectSchema.statics.query = function (query, sort, offset, length, fields, cb) {
+    this.find(query).sort(sort).skip(offset).limit(length).exec(function (err, result) {
+        cb(err, result.map(function (p) {
+            var o = {
+                id: p._id,
+                project: {
+                    name: p.name,
+                    thumbnail: p.thumbnail
+                }
+            };
+            fields.forEach(function (f) {
+                o[f] = p[f];
+            });
+            return o;
+        }));
+    });
+};
+var Project = module.exports = mongoose.model('Project', ProjectSchema);
+
+/**
+ * Queries information about a project.
+ *
+ * @param {objectId} project$id  the project ID
+ *
+ * @return {Project}
+ */
+Client.listener.on('project', function (client, packet, promise) {
+    Project.findById(packet.project$id, function (err, project) {
+        if (project) {
+            promise.fulfill({
+                $: 'result',
+                result: project.serialize()
+            });
+        } else {
+            promise.reject(Errors.notFound);
+        }
+    });
+});
+/**
+ * Toggles whether the user loves the given project.
+ *
+ * @param {objectId} project$id  the project
+ *
+ * @return {boolean}
+ */
+Client.listener.on('project.love', function (client, packet, promise) {
+    if (client.user) {
+        client.user.toggleLoveProject(packet.project$id, function (love) {
+            if (love === null) {
+                promise.reject(Errors.notFound);
+            } else {
+                promise.fulfill({
+                    $: 'result'
+                });
+            }
+        });
+    } else {
+        promise.reject(Errors.NO_PERMISSION);
+    }
+});
+Client.listener.on('project.create', function (client, packet, promise) {
+    if (client.user) {
+        Project.create(client.user, function (project) {
+            promise.fulfill({
+                $: 'result',
+                result: project._id
+            });
+        });
+    } else {
+        promise.reject(Errors.NO_PERMISSION);
+    }
+});
+/**
+ * Queries the total number of Amber projects.
+ *
+ * @return {unsigned}
+ */
+Client.listener.on('projects.count', function (client, packet, promise) {
+    Project.count(function (err, count) {
+        promise.fulfill({
+            $: 'result',
+            result: count
+        });
+    });
+});
+
+
+var TagSchema = Schema({
+    _id: String,
+    versions: [{
+        date: {type: Date, default: Date.now},
+        description: String
+    }],
+    description: String
+}, {collection: 'ATag'});
+TagSchema.plugin(Watch.updateHooks);
+var Tag = Project.Tag = mongoose.model('Tag', TagSchema);
+
+
+/*function extend(base) {
     [].slice.call(arguments, 1).forEach(function (ex) {
         for (var key in ex) {
             if (ex.hasOwnProperty(key)) {
@@ -500,4 +686,4 @@ extend(Block.prototype, {
             'size': ['changeSizeBy:', 1]
         }
     }
-});
+});*/
