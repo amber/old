@@ -25,7 +25,7 @@ var PostSchema = Schema({
 PostSchema.plugin(Watch.updateHooks);
 
 PostSchema.statics.create = function () {
-    return new Post({});
+    cb(null, new Post({}));
 };
 
 PostSchema.virtual('modified').get(function () {

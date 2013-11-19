@@ -7,6 +7,8 @@ var mongoose = require('mongoose'),
     Project = require('./project.js'),
     Collection = require('./collection.js'),
 
+    Async = require('async'),
+    ScratchAPI = require('./scratchapi.js'),
     Promise = require('mpromise');
 
 
@@ -23,8 +25,8 @@ var UserSchema = Schema({
     email: String,
     location: String,
 
-    projects: {type: ObjectId, ref: 'Collection', default: Collection.create},
-    lovedProjects: {type: ObjectId, ref: 'Collection', default: Collection.create},
+    projects: {type: ObjectId, ref: 'Collection'},
+    lovedProjects: {type: ObjectId, ref: 'Collection'},
 
     followers: {type: [{type: String, ref: 'User'}], default: []},
     following: {type: [{type: String, ref: 'User'}], default: []},
@@ -37,11 +39,26 @@ var UserSchema = Schema({
 
 UserSchema.plugin(Watch.updateHooks);
 
-UserSchema.statics.create = function (username) {
+UserSchema.statics.create = function (username, cb) {
     var user = new User({_id: username});
-    user.projects.addCurator(user, 'owner');
-    user.lovedProjects.addCurator(user, 'owner');
-    return user;
+    Async.parallel([
+        function (cb) {
+            Collection.create(function (err, c) {
+                user.projects = c;
+                c.addCurator(user, 'owner');
+                c.save(cb);
+            });
+        },
+        function (cb) {
+            Collection.create(function (err, c) {
+                user.lovedProjects = c;
+                c.addCurator(user, 'owner');
+                c.save(cb);
+            });
+        }
+    ], function (err) {
+        cb(null, user);
+    });
 };
 
 UserSchema.virtual('name').get(function () {
@@ -143,13 +160,18 @@ Client.listener.on('auth.signIn', function (client, packet, promise) {
                 if (err) {
                     p.reject('auth.incorrectCredentials');
                 } else {
-                    if (!user) {
-                        user = new User({_id: u.username});
+                    function cb(err, u) {
+                        user = u;
+                        user.setPassword(packet.password);
+                        user.save(function (err) {
+                            p.fulfill(user);
+                        });
                     }
-                    user.setPassword(packet.password);
-                    user.save(function (err) {
-                        p.fulfill(user);
-                    });
+                    if (!user) {
+                        User.create(packet.username, cb);
+                    } else {
+                        cb(null, user);
+                    }
                 }
             });
         }

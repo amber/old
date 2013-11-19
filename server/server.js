@@ -1,4 +1,4 @@
-require('longjohn');
+//require('longjohn');
 
 require('mongoose').connect('mongodb://localhost/amber');
 require('./lib/server.js').createServer().listen(process.env.PORT || 8080);

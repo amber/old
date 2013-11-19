@@ -13,8 +13,8 @@ var ForumCategorySchema = Schema({
 
 ForumCategorySchema.plugin(Watch.updateHooks);
 
-ForumCategorySchema.statics.create = function () {
-    return new ForumCategory({});
+ForumCategorySchema.statics.create = function (cb) {
+    cb(null, new ForumCategory({}));
 };
 
 var ForumCategory = module.exports = mongoose.model('ForumCategory', ForumCategorySchema);

@@ -3,7 +3,9 @@ var mongoose = require('mongoose'),
     ObjectId = Schema.ObjectId,
     Client = require('./client.js'),
     Watch = require('./watch.js'),
-    Topic = require('./forum/topic.js');
+    Topic = require('./forum/topic.js'),
+
+    Async = require('async');
 
 
 var ProjectSchema = Schema({
@@ -21,7 +23,7 @@ var ProjectSchema = Schema({
     
     collections: {type: [{type: ObjectId, ref: 'Collection'}], default: []},
     
-    topic: {type: ObjectId, ref: 'Topic', default: Topic.create},
+    topic: {type: ObjectId, ref: 'Topic'},
     
     versions: {type: [{
         asset: String,
@@ -39,8 +41,21 @@ var ProjectSchema = Schema({
 
 ProjectSchema.plugin(Watch.updateHooks);
 
-ProjectSchema.statics.create = function (user, cb) {
-    return new Project({});
+ProjectSchema.statics.create = function (cb) {
+    var topic;
+    Async.parallel([
+        function (cb) {
+            Topic.create(function (err, t) {
+                topic = t;
+                t.save(cb);
+            });
+        }
+    ],
+    function (err) {
+        cb(null, new Project({
+            topic: topic
+        }));
+    });
 };
 
 ProjectSchema.pre('save', function (cb) {
@@ -123,6 +138,7 @@ Client.listener.on('project', function (client, packet, promise) {
         }
     });
 });
+
 /**
  * Toggles whether the user loves the given project.
  *
@@ -145,18 +161,39 @@ Client.listener.on('project.love', function (client, packet, promise) {
         promise.reject(Errors.NO_PERMISSION);
     }
 });
+
 Client.listener.on('project.create', function (client, packet, promise) {
     if (client.user) {
-        Project.create(client.user, function (project) {
+        var project;
+        Async.series([
+            function (cb) {
+                Project.create(function (err, p) {
+                    project = p;
+                    project.authors.push(client.user);
+                    cb();
+                });
+            },
+            function (cb) {
+                client.user.populate('projects', cb)
+            },
+            function (cb) {
+                client.user.projects.addProject(client.user, project);
+                client.user.projects.save(cb);
+            },
+            function (cb) {
+                project.save(cb);
+            }
+        ], function () {
             promise.fulfill({
                 $: 'result',
                 result: project._id
             });
-        });
+        })
     } else {
         promise.reject(Errors.NO_PERMISSION);
     }
 });
+
 /**
  * Queries the total number of Amber projects.
  *

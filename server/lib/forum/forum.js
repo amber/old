@@ -16,8 +16,8 @@ var ForumSchema = Schema({
 
 ForumSchema.plugin(Watch.updateHooks);
 
-ForumSchema.statics.create = function () {
-    return new Forum({});
+ForumSchema.statics.create = function (cb) {
+    cb(null, new Forum({}));
 };
 
 ForumSchema.methods.addTopic = function (topic) {

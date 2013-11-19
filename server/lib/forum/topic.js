@@ -29,8 +29,8 @@ var TopicSchema = Schema({
 
 TopicSchema.plugin(Watch.updateHooks);
 
-TopicSchema.statics.create = function () {
-    return new Topic({});
+TopicSchema.statics.create = function (cb) {
+    cb(null, new Topic({}));
 };
 
 TopicSchema.pre('save', function (cb) {
@@ -118,23 +118,30 @@ Client.listener.on('forums.topic.add', function (client, packet, promise) {
             promise.reject(Errors.notFound);
             return;
         }
-        var topic = Topic.create();
-        forum.addTopic(topic);
-        var post = Post.create();
-        topic.addPost(post);
-        post.edit(self.user.name, packet.body.trim(), topic, packet.name);
-        topic.modified = post.modified;
-        Async.series([
-            post.save.bind(post),
-            topic.save.bind(topic),
-            forum.save.bind(forum)
-        ], function (err) {
-            promise.fulfill({
-                $: 'result',
-                result: {
-                    topic$id: topic._id,
-                    post$id: post._id
-                }
+        var topic, post;
+        Async.parallel([
+            Topic.create,
+            Post.create
+        ],
+        function (err, results) {
+            var topic = results[0];
+            forum.addTopic(topic);
+            var post = results[1];
+            topic.addPost(post);
+            post.edit(self.user.name, packet.body.trim(), topic, packet.name);
+            topic.modified = post.modified;
+            Async.series([
+                post.save.bind(post),
+                topic.save.bind(topic),
+                forum.save.bind(forum)
+            ], function (err) {
+                promise.fulfill({
+                    $: 'result',
+                    result: {
+                        topic$id: topic._id,
+                        post$id: post._id
+                    }
+                });
             });
         });
     });
