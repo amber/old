@@ -11,6 +11,7 @@ Control.property 'editor', ->
 
 class Editor extends Control
     isEditor: true
+    selectedCategory: 'motion'
 
     constructor: ->
         super()
@@ -24,9 +25,6 @@ class Editor extends Control
         @spriteList.hide()
         @spritePanel.toggleVisible = false
         document.addEventListener 'keydown', @keyDown
-
-    amber: ->
-        return @
 
     keyDown: (e) =>
         none = e.target is document.body
@@ -74,6 +72,7 @@ class Editor extends Control
                 @spriteList.addIcon sprite
 
             @selectSprite @project.stage.children[0] ? @project.stage
+            @stageView.model = @project.stage
         @
 
     createVariable: ->
@@ -83,7 +82,7 @@ class Editor extends Control
                     sprite = @selectedSprite
                     variable = name.text.trim()
 
-                    sprite = sprite.stage unless checkbox.checked
+                    sprite = sprite.stage unless checkbox?.checked
 
                     dialog.close()
                     if not variable or sprite.hasVariable variable
@@ -96,15 +95,18 @@ class Editor extends Control
                 .onCancel =>
                     dialog.close())
                 .add(name = new TextField()
-                    .setPlaceholder(tr 'Variable Name'))
-                .add(checkbox = new Checkbox()
-                    .setText(tr 'For this sprite only'))
-                .add(new Button()
-                    .setText(tr 'OK')
-                    .onExecute(form.submit, form))
-                .add(new Button()
-                    .setText(tr 'Cancel')
-                    .onExecute(form.cancel, form)))
+                    .setPlaceholder(tr 'Variable Name')))
+
+        unless @selectedSprite.isStage
+            dialog.add(checkbox = new Checkbox()
+                .setText(tr 'For this sprite only'))
+
+        dialog.add(new Button()
+                .setText(tr 'OK')
+                .onExecute(form.submit, form))
+            .add(new Button()
+                .setText(tr 'Cancel')
+                .onExecute(form.cancel, form))
             .show(@app)
 
     @property 'preloaderEnabled',
@@ -131,14 +133,13 @@ class Editor extends Control
         @tabBar.select @tabBar.selectedIndex ? 0
         @spriteList.select object
 
-    @property 'project'
-    ###
+    @property 'project',
         set: (project) ->
-            @preloaderEnabled = true
-            @progressText = tr 'Loading resources\u2026'
-            @_project = new Project(@).fromJSON project
+            # @preloaderEnabled = true
+            # @progressText = tr 'Loading project resources\u2026'
+            @_project = new Project().fromJSON project
             @stageView.model = @project.stage
-    ###
+        get: -> @_project
 
     @property 'projectId'
 
@@ -217,11 +218,6 @@ class Editor extends Control
     @property 'editMode',
         apply: (editMode) ->
             app = @app
-            if editMode
-                @originalParent = @parent
-                app.add @
-            else if @originalParent
-                @originalParent.add @
 
             app.redirect app.reverse('project', @projectId, editMode)
 
@@ -246,6 +242,12 @@ class Editor extends Control
 
             @spriteList.visible = editMode
             @spritePanel.toggleVisible = editMode
+
+            if editMode
+                @originalParent = @parent
+                app.add @
+            else if @originalParent
+                @originalParent.add @
 
     unload: =>
         if @editMode and @parent
@@ -306,7 +308,7 @@ class UserList extends Control
         item.href = user.profileURL
         target = '_blank'
         icon.src = user.avatarURL
-        label.textContent = user.name
+        label.textContent = tr.maybe user.name
         item.appendChild icon
         item.appendChild label
         item
@@ -439,47 +441,62 @@ class StageControls extends Control
 class StageView extends Control
     constructor: (@amber) ->
         super()
-        @initElements 'd-stage'
+        @element = @container = @newElement 'd-stage', 'canvas'
+        @resize()
+        @context = @element.getContext '2d'
+        @redraw = true
+        @onLive @start
+        @onUnlive @stop
+
+    @property 'model', apply: (model, old) ->
+        if old
+            old.unChange @dirty
+            old.unChildrenChange @listenChildren
+            c.unChange @dirty for c in old.children
+
+        model.onChange @dirty
+        c.onChange @dirty for c in model.children
+
+        @dirty()
+
+    @property 'framerate',
+        value: 60
+        apply: -> @restart()
+
+    resize: ->
+        @element.width = Stage.WIDTH
+        @element.height = Stage.HEIGHT
+
+    restart: ->
+        @stop()
+        @start()
+
+    start: ->
+        return if @interval
+        @interval = setInterval @step, 1000 / @framerate
+        @step()
+
+    stop: ->
+        return unless @interval
+        clearInterval @interval
+        delete @interval
+
+    dirty: =>
+        @redraw = true
+
+    step: =>
+        if @redraw
+            @draw()
+            @redraw = false
+
+    draw: ->
+        @element.width = @element.width
+        @amber.project.stage.draw @context
 
     createBackdrop: ->
         image = @model.filteredImage
         image.control = @
         @element.appendChild @image = image, @element.firstChild
-
-    @property 'model',
-        apply: (model) ->
-            @element.innerHTML = ''
-            @createBackdrop()
-            for sprite in model.children
-                @add new SpriteView(@amber).setModel(sprite)
-
-
-class SpriteView extends Control
-    constructor: (@amber) ->
-        super()
-        @initElements 'd-sprite'
-
-    createCostume: ->
-        image = @model.filteredImage
-        image.control = @
-        @element.appendChild @image = image, @element.firstChild
-
-    updateCostume: =>
-        costume = @model.costume
-        @image.style.WebkitTransform = 'translate(' + -costume.centerX + 'px,' + -costume.centerY + 'px)'
-
-    updatePosition: =>
-        x = @model.x + 240
-        y = 180 - @model.y
-        @element.style.WebkitTransform = 'translate(' + x + 'px,' + y + 'px) rotate(' + (@model.direction - 90) + 'deg)'
-
-    @property 'model',
-        apply: (model) ->
-            @createCostume()
-            @updatePosition()
-            model.onCostumeChange @updateCostume
-            model.onPositionChange @updatePosition
-
 
 class SpriteList extends Control
     constructor: (@amber) ->
@@ -730,12 +747,14 @@ class BlockPalette extends Control
         @initElements 'd-block-palette'
         @add @categorySelector = new CategorySelector().onCategorySelect @selectCategory, @
 
-        for name of specs when name isnt 'obsolete'
+        for name of specs when name isnt 'undefined'
             @categorySelector.addCategory name
 
-        @selectedCategory = 'motion'
+        @categorySelector.selectCategory @amber.selectedCategory
 
-    @property 'selectedCategory', apply: -> @reload()
+    @property 'selectedCategory', apply: (category) ->
+        @amber.selectedCategory = category
+        @reload()
 
     reload: ->
         @remove @list if @list
@@ -746,7 +765,14 @@ class BlockPalette extends Control
         if blocks.stage
             blocks = blocks[if @sprite.isStage then 'stage' else 'sprite']
 
+        target = @amber.selectedSprite
         for spec in blocks
+            if spec.stage
+                spec = spec.stage
+                continue unless @sprite.isStage
+            if spec.sprite
+                spec = spec.sprite
+                continue unless @sprite.isSprite
             do (spec) =>
                 if spec is '-'
                     @list.addSpace()
@@ -756,16 +782,16 @@ class BlockPalette extends Control
                 else if spec[0] is '!'
                     @list.add new Label().setText(tr.maybe spec[1])
                 else if spec is 'v' or spec is 'gv'
-                    sprite = @amber.selectedSprite
+                    sprite = target
                     sprite = sprite.stage if spec is 'gv'
                     for n in sprite.variableNames
                         if sprite.findVariable(n).category is 'data'
-                            block = Block.fromSpec ['v', n]
+                            block = Block.fromSpec ['v', n], target
                             @list.add block if block
                 else
-                    block = Block.fromSpec spec
+                    block = Block.fromSpec spec, target
+                    block.setDefaults()
                     @list.add block if block
-                    block.setDefaults(@amber.selectedSprite)
 
         @add @list
 
@@ -799,9 +825,6 @@ class CategorySelector extends Control
         @buttons.push button
         @categories.push category
         @byCategory[category] = button
-
-        if 1 is @buttons.length
-            @selectCategory 'motion'
 
         width = 100 / @buttons.length + '%'
         for b in @buttons
@@ -848,6 +871,22 @@ class BlockStack extends Control
         @initElements 'd-block-stack'
         @onTouchMove @drag
         @onTouchEnd @stopDrag
+
+    toJSON: (script = false) ->
+        result = (b.toJSON() for b in @children)
+        if script then result = [@x, @y, result]
+        result
+
+    @fromJSON: (json, target) ->
+        stack = new BlockStack()
+        if typeof json[0] is 'number'
+            stack.setPosition json[0], json[1]
+            json = json[2]
+
+        for b in json
+            stack.add Block.fromJSON b, target, false
+
+        stack
 
     @property 'top', -> @children[0]
     @property 'bottom', -> @children[@children.length - 1]
@@ -941,7 +980,7 @@ class BlockStack extends Control
             unless block.isReporter
                 bb = block.element.getBoundingClientRect()
 
-                if not block.isTerminal and (not bottom.isTerminal or block is block.parent.bottom)
+                if not block.isTerminal and (not bottom.isTerminal or block is block.parent.bottom) and not top.isHat
                     add tp, {
                         block
                         type: 'insertAfter'
@@ -952,7 +991,7 @@ class BlockStack extends Control
                         bottom: bb.bottom + VTOLERANCE
                     }
 
-                if block.parent.top is block and not bottom.isTerminal
+                if block.parent.top is block and not (bottom.isTerminal or block.isHat)
                     add tp, {
                         block, type: 'insertBefore'
                     }, {
@@ -1071,19 +1110,24 @@ class BlockStack extends Control
         while j--
             @insert s.children[j], @children[i]
         s.parent?.remove s
+        @changed()
 
     discardPosition: ->
         @element.style.left =
         @element.style.top = ''
 
     setPosition: (@x, @y) ->
+        @element.style.left = x + 'px'
+        @element.style.top = y + 'px'
+
+    setScreenPosition: (x, y) ->
         bb = @parent.container.getBoundingClientRect()
         ebb = @editor.container.getBoundingClientRect()
-        @element.style.left = x - bb.left + ebb.left + @parent.container.scrollLeft + 'px'
-        @element.style.top = y - bb.top + ebb.top + @parent.container.scrollTop + 'px'
+        @setPosition x - bb.left + ebb.left + @parent.container.scrollLeft,
+                     y - bb.top + ebb.top + @parent.container.scrollTop
 
     moveInParent: (x, y) ->
-        @setPosition x, y
+        @setScreenPosition x, y
         @editor.tab.scripts.fit()
 
 class Block extends Control
@@ -1095,19 +1139,9 @@ class Block extends Control
 
     shape: 'puzzle'
 
-    paddingTop: 3
-    paddingRight: 5
-    paddingBottom: 3
-    paddingLeft: 5
-
-    outsetTop: 0
-    outsetRight: 0
-    outsetBottom: 3
-    outsetLeft: 0
-
     argStart: 0
 
-    constructor: ->
+    constructor: (@target) ->
         super()
         @initElements 'd-block', 'd-block-label'
         @element.insertBefore (@canvas = @newElement 'd-block-canvas', 'canvas'), @container
@@ -1117,6 +1151,25 @@ class Block extends Control
 
         @onTouchStart @pickUp
         @onContextMenu @contextMenu
+
+    toJSON: -> [@selector].concat (a.toJSON() for a in @arguments)
+
+    @fromJSON: (json, target, reporter) ->
+        selector = json[0]
+        spec = specsBySelector[selector]
+        if spec
+            b = Block.fromSpec spec, target
+        else
+            b = Block.fromSpec [(if reporter then 'r' else 'c'), undefined, 'nop', 'obsolete' + Array(json.length).join(' %s')], target
+        for a, i in json[1..]
+            if a instanceof Array
+                if typeof a[0] is 'string'
+                    b.replaceArg b.arguments[i], Block.fromJSON a, target, true
+                else
+                    b.arguments[i].stack = BlockStack.fromJSON a, target
+            else if a?
+                b.arguments[i].value = a
+        b
 
     contextMenu: (e) ->
         items = [
@@ -1179,7 +1232,7 @@ class Block extends Control
                 stack.moveInParent bb.left + 20, bb.top + 20
 
     copy: ->
-        copy = new @constructor()
+        copy = new @constructor(@target)
         copy.spec = @spec
         copy.selector = @selector
         copy.category = @category
@@ -1230,6 +1283,9 @@ class Block extends Control
         if start < spec.length
             @add(new Label('d-block-text').setText(spec.substr(start)))
 
+        if args[args.length - 1]?.isCSlot
+            @add(new Label('d-block-c-end'))
+
         @defaultArguments = args.slice 0
 
     changed: ->
@@ -1267,23 +1323,31 @@ class Block extends Control
         puzzleHeight = 3
 
         switch shape
-            when 'puzzle', 'puzzle-terminal'
+            when 'puzzle', 'puzzle-terminal', 'hat'
                 r = 3
+                hh = @paddingTop - @paddingBottom
+                hw = 80
+                y = if shape is 'hat' then hh else 0
 
                 cx.fillStyle = color
 
                 cx.beginPath()
-                cx.arc r, r, r, Math.PI, Math.PI * 3 / 2, false
 
-                cx.lineTo puzzleInset, 0
-                cx.arc puzzleInset + r, puzzleHeight - r, r, Math.PI, Math.PI / 2, true
-                cx.arc puzzleInset + puzzleWidth - r, puzzleHeight - r, r, Math.PI / 2, 0, true
-                cx.lineTo puzzleInset + puzzleWidth, 0
+                if shape is 'hat'
+                    cx.moveTo 0, hh
+                    cx.quadraticCurveTo hw / 2, -hh / 2, hw, hh
+                else
+                    cx.arc r, r, r, Math.PI, Math.PI * 3 / 2, false
 
-                cx.arc w - r, r, r, Math.PI * 3 / 2, 0, false
+                    cx.lineTo puzzleInset, 0
+                    cx.arc puzzleInset + r, puzzleHeight - r, r, Math.PI, Math.PI / 2, true
+                    cx.arc puzzleInset + puzzleWidth - r, puzzleHeight - r, r, Math.PI / 2, 0, true
+                    cx.lineTo puzzleInset + puzzleWidth, 0
+
+                cx.arc w - r, y + r, r, Math.PI * 3 / 2, 0, false
                 cx.arc w - r, h - r, r, 0, Math.PI / 2, false
 
-                if shape is 'puzzle'
+                if shape isnt 'puzzle-terminal'
                     cx.lineTo puzzleInset + puzzleWidth, h
                     cx.arc puzzleInset + puzzleWidth - r, h + puzzleHeight - r, r, 0, Math.PI / 2, false
                     cx.arc puzzleInset + r, h + puzzleHeight - r, r, Math.PI / 2, Math.PI, false
@@ -1295,14 +1359,19 @@ class Block extends Control
                 cx.strokeStyle = highlight
                 cx.beginPath()
                 cx.moveTo .5, h - r
-                cx.arc r, r, r - .5, Math.PI, Math.PI * 3 / 2, false
 
-                cx.lineTo puzzleInset, .5
-                cx.arc puzzleInset + r, puzzleHeight - r, r + .5, Math.PI, Math.PI / 2, true
-                cx.arc puzzleInset + puzzleWidth - r, puzzleHeight - r, r + .5, Math.PI / 2, 0, true
-                cx.lineTo puzzleInset + puzzleWidth, .5
+                if shape is 'hat'
+                    cx.lineTo .5, hh + .5
+                    cx.quadraticCurveTo hw / 2, -hh / 2, hw, hh + .5
+                else
+                    cx.arc r, y + r, r - .5, Math.PI, Math.PI * 3 / 2, false
 
-                cx.arc w - r, r, r - .5, Math.PI * 3 / 2, 0, false
+                    cx.lineTo puzzleInset, y + .5
+                    cx.arc puzzleInset + r, y + puzzleHeight - r, r + .5, Math.PI, Math.PI / 2, true
+                    cx.arc puzzleInset + puzzleWidth - r, y + puzzleHeight - r, r + .5, Math.PI / 2, 0, true
+                    cx.lineTo puzzleInset + puzzleWidth, y + .5
+
+                cx.arc w - r, y + r, r - .5, Math.PI * 3 / 2, 0, false
                 cx.stroke()
 
                 cx.strokeStyle = shadow
@@ -1311,18 +1380,18 @@ class Block extends Control
                 cx.arc r, h - r, r - .5, Math.PI, Math.PI / 2, true
                 cx.lineTo puzzleInset, h - .5
 
-                if shape is 'puzzle'
+                if shape is 'puzzle-terminal'
+                    cx.lineTo puzzleInset + puzzleWidth, h - .5
+                else
                     cx.moveTo puzzleInset, h - .5
                     cx.arc puzzleInset + r, h + puzzleHeight - r, r - .5, Math.PI, Math.PI / 2, true
                     cx.arc puzzleInset + puzzleWidth - r, h + puzzleHeight - r, r - .5, Math.PI / 2, 0, true
                     cx.lineTo puzzleInset + puzzleWidth, h - .5
 
                     cx.moveTo puzzleInset + puzzleWidth, h - .5
-                else
-                    cx.lineTo puzzleInset + puzzleWidth, h - .5
 
                 cx.arc w - r, h - r, r - .5, Math.PI / 2, 0, true
-                cx.lineTo w - .5, r
+                cx.lineTo w - .5, y + r
 
                 cx.stroke()
 
@@ -1434,6 +1503,33 @@ class Block extends Control
     roundRect: (x, y, w, h, r) ->
 
     shapeChanged: ->
+        switch @shape
+            when 'puzzle', 'puzzle-terminal', 'hat'
+                @paddingLeft =
+                @paddingRight = 5
+                @paddingTop =
+                @paddingBottom = 3
+                @outsetLeft =
+                @outsetRight =
+                @outsetTop =
+                @outsetBottom = 0
+                if @shape isnt 'puzzle-terminal'
+                    @outsetBottom = 3
+                if @shape is 'hat'
+                    @paddingTop = 15
+            when 'rounded', 'hexagon'
+                @paddingLeft =
+                @paddingRight = 7
+                @paddingTop =
+                @paddingBottom = 3
+                @outsetLeft =
+                @outsetRight =
+                @outsetTop =
+                @outsetBottom = 0
+                if @shape is 'hexagon'
+                    @paddingLeft =
+                    @paddingRight = 12
+
         @container.style.top = "#{@paddingTop}px"
         @container.style.left = "#{@paddingLeft}px"
         @canvas.style.top = "#{-@outsetTop}px"
@@ -1444,17 +1540,20 @@ class Block extends Control
             @arguments[i].value = v
         @argStart = args.length
 
-    setDefaults: (sprite) ->
+    setDefaults: ->
         for a in @arguments
+            continue if a.value
             switch a.menu
                 when 'var', 'wvar'
-                    name = null
-                    for n in sprite.allVariableNames when sprite.findVariable(n).category is 'data'
-                        name = n
+                    for n in @target.allVariableNames when @target.findVariable(n).category is 'data'
+                        a.value = n
                         break
-                    a.value or= name ? ''
+                when 'costume'
+                    a.value = @target.costumes[0]?.name ? ''
+                when 'backdrop'
+                    a.value = @target.stage.costumes[0]?.name ? ''
 
-    @fromSpec: (spec) ->
+    @fromSpec: (spec, target) ->
         switch spec[0]
             when 'c', 't', 'r', 'b', 'e', 'h'
                 block = new (
@@ -1464,7 +1563,7 @@ class Block extends Control
                         b: BooleanReporterBlock
                         t: CommandBlock
                         c: CommandBlock
-                    )[spec[0]]()
+                    )[spec[0]](target)
                     .setCategory(spec[1])
                     .setSelector(spec[2])
                     .setSpec(spec[3])
@@ -1480,16 +1579,15 @@ class Block extends Control
                 block.setArgs spec.slice(4)...
                 block
             when 'v'
-                new VariableBlock().setVar(spec[1])
+                block = new VariableBlock(target).setVar(spec[1])
             when 'vs', 'vc'
-                block = new SetterBlock()
+                block = new SetterBlock(target)
                     .setIsChange(spec[0] is 'vc')
 
                 block.setVar(spec[1]) if spec[1]
-
-                block
             else
                 console.warn "Invalid block type #{spec[0]}"
+        block
 
     argFromSpec: (type, menu, i) ->
         switch type
@@ -1499,15 +1597,19 @@ class Block extends Control
                 new EnumArg().setMenu(menu).setInline(type is 'a')
             when 'c'
                 new CArg()
+            when 'b'
+                new BoolArg()
+            when 'color'
+                new ColorArg().randomize()
             else
                 new TextArg().setText("#E:#{i}:#{type}.#{menu}")
 
     getMenuItems: (menu) ->
         items = switch menu
             when 'backdrop'
-                c.name for c in @editor.selectedSprite.stage.costumes
+                c.name for c in @target.stage.costumes
             when 'costume'
-                c.name for c in @editor.selectedSprite.costumes
+                c.name for c in @target.costumes
             when 'deletionIndex'
                 ['1', ($:'last'), ($:'random'), Menu.separator, ($:'all')]
             when 'direction'
@@ -1521,33 +1623,45 @@ class Block extends Control
             when 'rotationStyle'
                 [($:'left-right'), ($:'don\'t rotate'), ($:'all around')]
             when 'stop'
-                [($:'all'), ($:'this script'), ($:'other scripts in sprite')]
+                [($:'all'), ($:'this script'), ($:'other scripts in @target')]
             when 'spriteOrMouse'
-                [$:'mouse-pointer', Menu.separator].concat (s.name for s in @editor.selectedSprite.stage.allSprites)
+                [$:'mouse-pointer', Menu.separator].concat (s.name for s in @target.stage.allSprites)
             when 'spriteOrSelf'
-                [$:'myself', Menu.separator].concat (s.name for s in @editor.selectedSprite.stage.allSprites)
+                [$:'myself', Menu.separator].concat (s.name for s in @target.stage.allSprites)
+            when 'spriteOrStage'
+                [$:'Stage', Menu.separator].concat (s.name for s in @target.stage.allSprites)
             when 'stageOrThis'
                 [($:'Stage'), ($:'this sprite')]
+            when 'triggerSensor'
+                [($:'loudness'), ($:'timer'), ($:'video motion')]
             when 'var'
-                @editor.selectedSprite?.allVariableNames
+                @target.allVariableNames
             when 'videoMotion'
                 [($:'motion'), ($:'direction')]
             when 'videoState'
                 [($:'off'), ($:'on'), ($:'on-flipped')]
             when 'wvar'
-                @editor.selectedSprite?.allWritableVariableNames
+                @target.allWritableVariableNames
             else
                 console.warn "Missing menu #{menu}"
                 [menu]
-        (if x.$ then title: tr(x.$), action: x else x) for x in items
+        (if x.$ then title: tr(x.$).replace(/@target/g, tr.maybe @target.name), action: x else x) for x in items
 
     iconFromSpec: (id) ->
-        # TODO
-        new Label('d-block-arg').setText("#{id}")
+        switch id
+            when 'target' then new Label('d-block-text').setText(tr.maybe @target.name)
+            else new Label('d-block-arg').setText("#{id}")
 
 class HatBlock extends Block
 
+    shape: 'hat'
+    isHat: true
+
 class CommandBlock extends Block
+
+    stopChanged: ->
+        if @selector is 'stopScripts'
+            @isTerminal = @arguments[0].value.$ isnt 'other scripts in @target'
 
     @property 'isTerminal', apply: (terminal) ->
         @shape = if terminal then 'puzzle-terminal' else 'puzzle'
@@ -1556,8 +1670,8 @@ class CommandBlock extends Block
 class SetterBlock extends CommandBlock
     category: 'data'
 
-    constructor: ->
-        super()
+    constructor: (target) ->
+        super target
         @isChange = false
 
     @property 'isChange', apply: (isChange) ->
@@ -1619,6 +1733,9 @@ class SetterBlock extends CommandBlock
                     @argFromSpec('color')
                 when 'pen lightness'
                     @argFromSpec('f').setValue(50)
+                when 'video transparency'
+                    @unit = '%'
+                    @argFromSpec('f').setValue(50)
                 when 'pen size'
                     @argFromSpec('f').setValue(1)
                 when 'rotation style'
@@ -1644,15 +1761,9 @@ class ReporterBlock extends Block
 
     shape: 'rounded'
 
-    paddingTop: 3
-    paddingRight: 7
-    paddingBottom: 3
-    paddingLeft: 7
-
-    outsetTop: 0
-    outsetRight: 0
-    outsetBottom: 0
-    outsetLeft: 0
+    constructor: (target) ->
+        super target
+        @addClass 'd-reporter-block'
 
 class BooleanReporterBlock extends ReporterBlock
 
@@ -1660,14 +1771,12 @@ class BooleanReporterBlock extends ReporterBlock
 
     shape: 'hexagon'
 
-    paddingRight: 12
-    paddingLeft: 12
-
 class VariableBlock extends ReporterBlock
     category: 'data'
 
-    constructor: ->
-        super()
+    constructor: (target) ->
+        super target
+        @selector = 'readVariable'
         @spec = '%a.var'
 
     varChanged: ->
@@ -1757,8 +1866,12 @@ class EnumArg extends BlockArg
         value: '',
         set: (v) ->
             @_value = if typeof v is 'number' then '' + v else v
-            @setText (if v.$ then tr v.$ else v)
+            text = tr.maybe v
+            if v.$ and @parent?.target
+                text = text.replace /@target/g, tr.maybe @parent.target.name
+            @setText text
             @parent?.varChanged?() if @menu is 'var' or @menu is 'wvar'
+            @parent?.stopChanged?() if @menu is 'stop'
 
         get: -> @_value
 
@@ -1914,6 +2027,8 @@ class CArg extends BlockArg
     isCommandSlot: true
     isCSlot: true
 
+    toJSON: -> @stack?.toJSON()
+
     constructor: ->
         super()
         @initElements 'd-block-c'
@@ -1924,7 +2039,78 @@ class CArg extends BlockArg
             @add stack
         @changed()
 
+class BoolArg extends BlockArg
+
+    toJSON: -> false
+
+    constructor: ->
+        super()
+        @element = @container = @newElement 'd-block-arg d-block-bool', 'canvas'
+        @context = @element.getContext '2d'
+        @draw()
+
+    draw: ->
+        @element.width = w = 30
+        @element.height = h = 13
+
+        r = Math.min h / 2, 12
+
+        cx = @context
+
+        cx.fillStyle = 'rgba(0, 0, 0, .1)'
+        cx.beginPath()
+        cx.moveTo .5, h / 2 - .5
+        cx.lineTo r, 0
+        cx.lineTo w - r, 0
+        cx.lineTo w - .5, h / 2 - .5
+        cx.lineTo w - r, h - 1
+        cx.lineTo r, h - 1
+        cx.fill()
+
+        cx.strokeStyle = 'rgba(0, 0, 0, .4)'
+        cx.beginPath()
+        cx.moveTo .5, h / 2
+        cx.lineTo r, .5
+        cx.lineTo w - r, .5
+        cx.lineTo w - .5, h / 2
+        cx.stroke()
+
+        cx.strokeStyle = 'rgba(255, 255, 255, .3)'
+        cx.beginPath()
+        cx.moveTo w - .5, h / 2
+        cx.lineTo w - r, h - .5
+        cx.lineTo r, h - .5
+        cx.lineTo .5, h / 2
+        cx.stroke()
+
+class ColorArg extends BlockArg
+
+    constructor: ->
+        super()
+        @initElements 'd-block-arg d-block-color'
+        @element.appendChild @picker = @newElement 'd-block-color-input', 'input'
+        @picker.type = 'color'
+        @value = 0
+        @picker.addEventListener 'input', @colorSelected
+
+    colorSelected: =>
+        @setValue parseInt @picker.value.substr(1), 16
+        @edited()
+
+    randomize: ->
+        @setValue Math.floor(Math.random() * 0xffffff)
+
+    copy: -> new @constructor()
+
+    @property 'value',
+        apply: (color) ->
+            css = color.toString 16
+            while css.length < 6
+                css = '0' + css
+            @element.style.backgroundColor = @picker.value = '#' + css
+
 module 'amber.editor.ui', {
+    BlockStack
     Block
     CommandBlock
     SetterBlock

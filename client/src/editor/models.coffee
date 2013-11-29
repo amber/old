@@ -22,11 +22,17 @@ class Project extends Base
     constructor: ->
         @name = tr 'Untitled'
 
+    fromJSON: (json) ->
+        @name = json.name ? null
+        @stage = new Stage().fromJSON(json.stage)
+
 class Scriptable extends Base
     @id: 0
 
     isStage: false
     isSprite: false
+
+    @event 'Change'
 
     constructor: (@name) ->
         @id = ++Scriptable.id
@@ -38,8 +44,37 @@ class Scriptable extends Base
             @variables.push new Variable @, $:name, config
         @rebuildVariables()
 
-        @children = []
         @costumes = []
+
+        @filters =
+            color: 0
+            fisheye: 0
+            whirl: 0
+            pixelate: 0
+            mosaic: 0
+            brightness: 0
+            ghost: 0
+
+        @onCostumeChange @change
+        @onFilterChange @change
+
+    fromJSON: (json) ->
+        if json.costumes
+            index = json.currentCostumeIndex ? 0
+            @addCostume c, i is index for c, i in json.costumes
+
+        @
+
+    change: =>
+        @dispatch 'Change', new ControlEvent(@)
+
+    @event 'FilterChange'
+    setFilter: (name, value) ->
+        @filters[name] = value
+        @dispatch 'FilterChange', new ControlEvent(@)
+
+    applyFilter: (cx) ->
+        cx.globalAlpha = 1 - @filters.ghost / 100
 
     @property 'costume', event: 'CostumeChange'
     @property 'costumeIndex',
@@ -57,19 +92,19 @@ class Scriptable extends Base
     @property 'allSprites', ->
         x for x in @allObjects when x.isSprite
 
-    addCostume: (info) ->
+    addCostume: (info, apply) ->
         image = new Image
         image.onload = =>
             costume = new Costume().set({
-                name: info.name
+                name: info.costumeName
                 image: image
                 rotationCenterX: info.rotationCenterX
                 rotationCenterY: info.rotationCenterY
             })
-            if not @costumes.length
+            if apply
                 @costume = costume
             @costumes.push costume
-        image.src = info.base64
+        image.src = info.baseLayerURL
         @
 
     addVariable: (name) ->
@@ -139,6 +174,9 @@ class Scriptable extends Base
         transUnion (v.name for v in @variables when v.isWritable), (@parent?.allWritableVariableNames ? [])
 
 class Stage extends Scriptable
+    @WIDTH: 480
+    @HEIGHT: 360
+
     isStage: true
 
     @property 'stage', -> @
@@ -151,19 +189,44 @@ class Stage extends Scriptable
         'mouse x': category: 'sensing', isWritable: false
         'mouse y': category: 'sensing', isWritable: false
         'mouse down?': category: 'sensing', isWritable: false
-        'timer': 'sensing'
         'loudness': category: 'sensing', isWritable: false
         'loud?': category: 'sensing', isWritable: false
+        'video transparency': 'sensing'
+        'timer': 'sensing'
 
-    @property 'children', apply: (children, old) ->
-        if old
-            for c in old
-                c.parent = null
-        for c in children
-            c.parent = @
+    @property 'children',
+        event: 'ChildrenChange'
+        apply: (children, old) ->
+            if old
+                for c in old
+                    c.parent = null
+            for c in children
+                c.parent = @
 
     constructor: ->
         super $:'Stage'
+
+        @children = []
+
+    fromJSON: (json) ->
+        super json
+
+        if json.children
+            @children = (new Sprite(s.objName).fromJSON(s) for s in json.children)
+
+        @
+
+    draw: (cx) ->
+        if costume = @costumes[@costumeIndex]
+            cx.save()
+
+            @applyFilter cx
+            cx.drawImage costume.image, 0, 0
+
+            cx.restore()
+
+        for c in @children
+            c.draw cx
 
 class Sprite extends Scriptable
     isSprite: true
@@ -183,6 +246,46 @@ class Sprite extends Scriptable
 
     constructor: (name) ->
         super name
+
+        @onPositionChange @change
+        @onDirectionChange @change
+        @onVisibleChange @change
+        @onScaleChange @change
+
+    x: 0
+    y: 0
+    @event 'PositionChange'
+    moveTo: (x, y) ->
+        @x = x
+        @y = y
+        @dispatch 'PositionChange', new ControlEvent(@)
+
+    @property 'direction',
+        value: 90
+        event: 'DirectionChange'
+
+    @property 'visible',
+        value: true
+        event: 'VisibleChange'
+
+    @property 'scale',
+        value: 1
+        event: 'ScaleChange'
+
+    draw: (cx) ->
+        if @visible and @costume
+            cx.save()
+
+            cx.translate Stage.WIDTH / 2 + @x, Stage.HEIGHT / 2 - @y
+            cx.rotate (@direction - 90) * Math.PI / 180
+            cx.scale @scale, @scale
+            cx.translate -@costume.rotationCenterX, -@costume.rotationCenterY
+
+            @applyFilter cx
+
+            cx.drawImage @costume.image, 0, 0
+
+            cx.restore()
 
     @default: ->
         new Sprite tr 'Scratch Cat'
