@@ -3,6 +3,7 @@ var DEBUG_PACKETS = true;
 var Client = module.exports = function (connection) {
     this.connection = connection;
     this.watchers = [];
+    this.id = ShortID.generate();
     connection.on('message', this.message.bind(this));
     connection.on('close', this.close.bind(this));
 }
@@ -14,6 +15,7 @@ Client.prototype.listener = Client.listener = new EventEmitter();
 var Domain = require('domain'),
     Promise = require('mpromise'),
     Crypto = require('crypto'),
+    ShortID = require('shortid'),
     Watch = require('./watch.js'),
     User = require('./user.js');
 
@@ -46,9 +48,13 @@ Client.prototype.decodePacket = function (string) {
 };
 Client.prototype.encodePacket = function (packet) {
     if (DEBUG_PACKETS) {
+        // TODO: This is really <s>inefficient</s> ugly.
         packet.$type = packet.$;
         delete packet.$;
-        return JSON.stringify(packet);
+        var p = JSON.stringify(packet);
+        packet.$ = packet.$type;
+        delete packet.$type;
+        return p;
     }
     var type = this.packetTuples['Server:' + packet.$],
         tuple = [packet.$];
@@ -80,7 +86,7 @@ Client.prototype.message = function (m) {
     });
 };
 Client.prototype.close = function () {
-    this.unwatchAll();
+    Client.listener.emit('disconnect', this, new Promise(function () {}));
 };
 Client.prototype.sendPacket = function (packet) {
     this.connection.send(this.encodePacket(packet));
@@ -126,6 +132,10 @@ Client.listener.on('connect', function (client, packet, promise) {
             sessionId: client.session
         });
     }
+});
+
+Client.listener.on('disconnect', function (client) {
+    client.unwatchAll();
 });
 
 module.exports = Client;

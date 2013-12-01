@@ -7,6 +7,7 @@ var mongoose = require('mongoose'),
 
     Async = require('async');
 
+var defaultProject = '14c7903ef24d4aa4c1c6bb625d2fa05bc3b52e3cc975b23e407451367c5451b1';
 
 var ProjectSchema = Schema({
     _id: {type: ObjectId, auto: true},
@@ -29,7 +30,7 @@ var ProjectSchema = Schema({
         asset: String,
         date: {type: Date, default: Date.now}
     }], default: [{
-        asset: null //TODO: Default project asset
+        asset: defaultProject //TODO: Default project asset
     }]},
 
     views: {type: Number, default: 0},

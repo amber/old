@@ -7,6 +7,7 @@ var WebSocket = require('websocket'),
     Client = require('./client.js'),
     Assets = require('./assets.js'),
     Project = require('./project.js'),
+    Editor = require('./editor.js')
 
     ForumCategory = require('./forum/forumCategory.js'),
     Forum = require('./forum/forum.js'),
