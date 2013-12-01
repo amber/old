@@ -2,7 +2,9 @@ var mongoose = require('mongoose'),
     Schema = mongoose.Schema,
     ObjectId = Schema.ObjectId,
     Watch = require('./watch.js'),
+    Client = require('./client.js'),
     Topic = require('./forum/topic.js'),
+    Project = require('./project.js'),
 
     Async = require('async');
 
@@ -56,7 +58,8 @@ CollectionSchema.methods.addCurator = function (user, permission) {
 
 CollectionSchema.methods.addProject = function (user, project) {
     if (this.can(user, 'add')) {
-        this.projects.push(project);
+        this.projects.addToSet(project);
+        project.collections.addToSet(this);
         return true;
     }
     return false;
@@ -84,5 +87,14 @@ CollectionSchema.methods.can = function (user, action) {
     }
     return false;
 };
+
+Client.listener.on('collection.projects', function (client, packet, promise) {
+    Project.query({collections: packet.collection}, '-modified', packet.offset, packet.length, [], function (err, projects) {
+        promise.fulfill({
+            $: 'result',
+            result: projects
+        });
+    });
+});
 
 var Collection = module.exports = mongoose.model('Collection', CollectionSchema);
