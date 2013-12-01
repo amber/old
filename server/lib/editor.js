@@ -94,7 +94,6 @@ Client.listener.on('editor.connect', function (client, packet, promise) {
         }
         sessions[id] = session;
         session.addClient(client);
-        console.log(sessions);
         promise.fulfill({
             $: 'result',
             result: {
@@ -107,7 +106,6 @@ Client.listener.on('editor.connect', function (client, packet, promise) {
 
 function disconnect(client, packet, promise) {
     client.editorSession.removeClient(client);
-    console.log(sessions);
     promise.fulfill({
         $: 'result'
     });
