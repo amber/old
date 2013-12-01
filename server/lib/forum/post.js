@@ -5,6 +5,8 @@ var mongoose = require('mongoose'),
     Watch = require('../watch.js'),
     Topic,
 
+    Error = require('../error.js'),
+
     Async = require('async');
 
 
@@ -86,7 +88,7 @@ var Post = module.exports = mongoose.model('Post', PostSchema);
 Client.listener.on('forums.posts', function (client, packet, promise) {
     Topic.findById(packet.topic$id).populate('posts').exec(function (err, topic) {
         if (!topic) {
-            return promise.reject(Errors.notFound);
+            return promise.reject(Error.notFound);
         }
         var posts = topic.posts.slice(packet.offset, packet.offset + packet.length);
         promise.fulfill({
@@ -108,14 +110,14 @@ Client.listener.on('forums.post.delete', function (client, packet, promise) {
     var self = client;
     Post.findById(packet.post$id, function (err, post) {
         if (!post) {
-            return promise.reject(Errors.notFound);
+            return promise.reject(Error.notFound);
         }
         if (post.authors.indexOf(self.user.name) > -1) {
             post.delete(promise.fulfill.bind(promise, {
                 $: 'result'
             }));
         } else {
-            promise.reject(Errors.NO_PERMISSION);
+            promise.reject(Error.noUser);
         }
     });
 });
@@ -123,11 +125,11 @@ Client.listener.on('forums.post.delete', function (client, packet, promise) {
 Client.listener.on('forums.post.add', function (client, packet, promise) {
     var self = client;
     if (!client.user) {
-        return promise.reject(Errors.NO_PERMISSION);
+        return promise.reject(Error.noUser);
     }
     Topic.findById(packet.topic$id, function (err, topic) {
         if (!topic) {
-            return promise.reject(Errors.notFound);
+            return promise.reject(Error.notFound);
         }
         var post = new Post();
         topic.addPost(post);
@@ -149,7 +151,7 @@ Client.listener.on('forums.post.edit', function (client, packet, promise) {
     var self = client;
     Post.findById(packet.post$id).populate('topic').exec(function (err, post) {
         if (!post) {
-            return promise.reject(Errors.notFound);
+            return promise.reject(Error.notFound);
         }
         var topic = post.topic;
         post.edit(self.user.name, packet.body.trim(), topic, packet.name);

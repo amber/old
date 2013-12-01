@@ -3,6 +3,7 @@ var mongoose = require('mongoose'),
     ObjectId = Schema.ObjectId,
     Client = require('../client.js'),
     Watch = require('../watch.js'),
+    Error = require('../error.js'),
 
     Serialize = require('../serializer.js');
 
@@ -86,8 +87,7 @@ Client.listener.on('watch.forum', function (client, packet, promise) {
     };
     Forum.findById(packet.forum$id, function (err, forum) {
         if (!forum) {
-            promise.reject(Errors.notFound);
-            return;
+            return promise.reject(Error.notFound);
         }
         forum.getTopics(packet.offset || 0, 20, function (topics) {
             promise.fulfill({

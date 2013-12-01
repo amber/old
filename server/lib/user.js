@@ -7,6 +7,8 @@ var mongoose = require('mongoose'),
     Project = require('./project.js'),
     Collection = require('./collection.js'),
 
+    Error = require('./error.js'),
+
     Async = require('async'),
     ScratchAPI = require('./scratchapi.js'),
     Promise = require('mpromise');
@@ -182,17 +184,16 @@ Client.listener.on('auth.signIn', function (client, packet, promise) {
  * Initiates a log out attempt.
  */
 Client.listener.on('auth.signOut', function (client, packet, promise) {
-    if (client.user) {
-        client.user.session = null;
-        client.user.save(function (err) {
-            promise.fulfill({
-                $: 'result'
-            });
-        });
-        client.user = null;
-    } else {
-        promise.reject(Errors.NO_PERMISSION);
+    if (!client.user) {
+        return promise.reject(Error.notAllowed);
     }
+    client.user.session = null;
+    client.user.save(function (err) {
+        promise.fulfill({
+            $: 'result'
+        });
+    });
+    client.user = null;
 });
 
 /**
@@ -203,23 +204,21 @@ Client.listener.on('auth.signOut', function (client, packet, promise) {
  * @return {boolean}
  */
 Client.listener.on('user.follow', function (client, packet, promise) {
-    if (client.user) {
-        client.user.toggleFollowing(packet.user, function (following) {
-            promise.fulfill({
-                $: 'result',
-                result: following
-            });
-        });
-    } else {
-        promise.reject(Errors.NO_PERMISSION);
+    if (!client.user) {
+        return promise.reject(Error.notAllowed);
     }
+    client.user.toggleFollowing(packet.user, function (following) {
+        promise.fulfill({
+            $: 'result',
+            result: following
+        });
+    });
 });
 Client.listener.on('user.following', function (client, packet, promise) {
-    if (client.user) {
-        promise.fulfill(client.user.following.indexOf(packet.user) !== -1);
-    } else {
-        promise.reject(Errors.NO_PERMISSION);
+    if (!client.user) {
+        return promise.reject(Error.notAllowed);
     }
+    promise.fulfill(client.user.following.indexOf(packet.user) !== -1);
 });
 /**
  * Queries information about a user.

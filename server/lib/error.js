@@ -1,3 +1,4 @@
-exports.noUser = 1;
-exports.notFound = 2;
-exports.notAllowed = 3;
+exports.notFound = 0;
+exports.incorrectCredentials = 1;
+exports.notAllowed = 2;
+exports.noUser = 3;
