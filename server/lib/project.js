@@ -134,9 +134,12 @@ Client.listener.on('project', function (client, packet, promise) {
         if (!project) {
             return promise.reject(Error.notFound);
         }
-        promise.fulfill({
-            $: 'result',
-            result: project.serialize()
+        project.views++;
+        project.save(function (err) {
+            promise.fulfill({
+                $: 'result',
+                result: project.serialize()
+            });
         });
     });
 });
