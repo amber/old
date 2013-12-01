@@ -81,48 +81,46 @@ UserSchema.methods.checkPassword = function (password) {
 UserSchema.methods.toggleFollowing = function (name, cb) {
     var self = this;
     User.findById(name, function (err, user) {
-        if (user) {
-            var following = self.following.indexOf(user.name) === -1;
-            if (following) {
-                user.followers.addToSet(self.name);
-                self.following.addToSet(user.name);
-            } else {
-                user.followers.pull(self.name);
-                self.following.pull(user.name);
-            }
-            self.save(function (err) {
-                user.save(function (err) {
-                    cb(following);
-                });
-            });
-        } else {
-            cb(null);
+        if (!user) {
+            return cb(true);
         }
+        var following = self.following.indexOf(user.name) === -1;
+        if (following) {
+            user.followers.addToSet(self.name);
+            self.following.addToSet(user.name);
+        } else {
+            user.followers.pull(self.name);
+            self.following.pull(user.name);
+        }
+        self.save(function (err) {
+            user.save(function (err) {
+                cb(null, following);
+            });
+        });
     })
 };
 UserSchema.methods.toggleLoveProject = function (project, cb) {
     var self = this;
     Project.findById(project, function (err, project) {
         if (project) {
-            var love = project.lovers.indexOf(self.name) === -1;
-            var love;
-            if (love) {
-                project.lovers.addToSet(self.name);
-                self.lovedProjects.addToSet(project);
-                love = true;
-            } else {
-                project.lovers.pull(self.name);
-                self.lovedProjects.pull(project);
-                love = false;
-            }
-            self.save(function (err) {
-                project.save(function (err) {
-                    cb(love);
-                });
-            });
-        } else {
-            cb(null);
+            return cb(true);
         }
+        var love = project.lovers.indexOf(self.name) === -1;
+        var love;
+        if (love) {
+            project.lovers.addToSet(self.name);
+            self.lovedProjects.addToSet(project);
+            love = true;
+        } else {
+            project.lovers.pull(self.name);
+            self.lovedProjects.pull(project);
+            love = false;
+        }
+        self.save(function (err) {
+            project.save(function (err) {
+                cb(null, love);
+            });
+        });
     });
 };
 UserSchema.methods.serialize = function () {
@@ -160,7 +158,7 @@ Client.listener.on('auth.signIn', function (client, packet, promise) {
         } else {
             ScratchAPI(packet.username, packet.password, function (err, u) {
                 if (err) {
-                    p.reject('auth.incorrectCredentials');
+                    p.reject(Error.incorrectCredentials);
                 } else {
                     function cb(err, u) {
                         user = u;
@@ -207,7 +205,10 @@ Client.listener.on('user.follow', function (client, packet, promise) {
     if (!client.user) {
         return promise.reject(Error.notAllowed);
     }
-    client.user.toggleFollowing(packet.user, function (following) {
+    client.user.toggleFollowing(packet.user, function (err, following) {
+        if (err) {
+            return promise.reject(Error.notFound);
+        }
         promise.fulfill({
             $: 'result',
             result: following

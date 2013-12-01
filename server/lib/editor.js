@@ -105,6 +105,9 @@ Client.listener.on('editor.connect', function (client, packet, promise) {
 });
 
 function disconnect(client, packet, promise) {
+    if (!client.editorSession) {
+        return promise.reject(Error.notAllowed);
+    }
     client.editorSession.removeClient(client);
     promise.fulfill({
         $: 'result'
@@ -112,7 +115,11 @@ function disconnect(client, packet, promise) {
 }
 
 Client.listener.on('editor.disconnect', disconnect);
-Client.listener.on('disconnect', disconnect);
+Client.listener.on('disconnect', function (client, packet, promise) {
+    if (client.editorSession) {
+        disconnect(client, packet, promise);
+    }
+});
 
 Client.listener.on('editor.chat.send', function (client, packet, promise) {
     client.editorSession.sendMessage(client.user.name, packet.message);

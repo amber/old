@@ -155,8 +155,8 @@ Client.listener.on('project.love', function (client, packet, promise) {
     if (!client.user) {
         return promise.reject(Error.notAllowed);
     }
-    client.user.toggleLoveProject(packet.project$id, function (love) {
-        if (love === null) {
+    client.user.toggleLoveProject(packet.project$id, function (err, love) {
+        if (err) {
             return promise.reject(Error.notFound);
         }
         promise.fulfill({
