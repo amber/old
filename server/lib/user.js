@@ -7,6 +7,8 @@ var mongoose = require('mongoose'),
     Project = require('./project.js'),
     Collection = require('./collection.js'),
 
+    Error = require('./error.js'),
+
     Async = require('async'),
     ScratchAPI = require('./scratchapi.js'),
     Promise = require('mpromise');
@@ -79,48 +81,46 @@ UserSchema.methods.checkPassword = function (password) {
 UserSchema.methods.toggleFollowing = function (name, cb) {
     var self = this;
     User.findById(name, function (err, user) {
-        if (user) {
-            var following = self.following.indexOf(user.name) === -1;
-            if (following) {
-                user.followers.addToSet(self.name);
-                self.following.addToSet(user.name);
-            } else {
-                user.followers.pull(self.name);
-                self.following.pull(user.name);
-            }
-            self.save(function (err) {
-                user.save(function (err) {
-                    cb(following);
-                });
-            });
-        } else {
-            cb(null);
+        if (!user) {
+            return cb(true);
         }
+        var following = self.following.indexOf(user.name) === -1;
+        if (following) {
+            user.followers.addToSet(self.name);
+            self.following.addToSet(user.name);
+        } else {
+            user.followers.pull(self.name);
+            self.following.pull(user.name);
+        }
+        self.save(function (err) {
+            user.save(function (err) {
+                cb(null, following);
+            });
+        });
     })
 };
 UserSchema.methods.toggleLoveProject = function (project, cb) {
     var self = this;
     Project.findById(project, function (err, project) {
         if (project) {
-            var love = project.lovers.indexOf(self.name) === -1;
-            var love;
-            if (love) {
-                project.lovers.addToSet(self.name);
-                self.lovedProjects.addToSet(project);
-                love = true;
-            } else {
-                project.lovers.pull(self.name);
-                self.lovedProjects.pull(project);
-                love = false;
-            }
-            self.save(function (err) {
-                project.save(function (err) {
-                    cb(love);
-                });
-            });
-        } else {
-            cb(null);
+            return cb(true);
         }
+        var love = project.lovers.indexOf(self.name) === -1;
+        var love;
+        if (love) {
+            project.lovers.addToSet(self.name);
+            self.lovedProjects.addToSet(project);
+            love = true;
+        } else {
+            project.lovers.pull(self.name);
+            self.lovedProjects.pull(project);
+            love = false;
+        }
+        self.save(function (err) {
+            project.save(function (err) {
+                cb(null, love);
+            });
+        });
     });
 };
 UserSchema.methods.serialize = function () {
@@ -158,7 +158,7 @@ Client.listener.on('auth.signIn', function (client, packet, promise) {
         } else {
             ScratchAPI(packet.username, packet.password, function (err, u) {
                 if (err) {
-                    p.reject('auth.incorrectCredentials');
+                    p.reject(Error.incorrectCredentials);
                 } else {
                     function cb(err, u) {
                         user = u;
@@ -182,17 +182,16 @@ Client.listener.on('auth.signIn', function (client, packet, promise) {
  * Initiates a log out attempt.
  */
 Client.listener.on('auth.signOut', function (client, packet, promise) {
-    if (client.user) {
-        client.user.session = null;
-        client.user.save(function (err) {
-            promise.fulfill({
-                $: 'result'
-            });
-        });
-        client.user = null;
-    } else {
-        promise.reject(Errors.NO_PERMISSION);
+    if (!client.user) {
+        return promise.reject(Error.notAllowed);
     }
+    client.user.session = null;
+    client.user.save(function (err) {
+        promise.fulfill({
+            $: 'result'
+        });
+    });
+    client.user = null;
 });
 
 /**
@@ -203,23 +202,24 @@ Client.listener.on('auth.signOut', function (client, packet, promise) {
  * @return {boolean}
  */
 Client.listener.on('user.follow', function (client, packet, promise) {
-    if (client.user) {
-        client.user.toggleFollowing(packet.user, function (following) {
-            promise.fulfill({
-                $: 'result',
-                result: following
-            });
-        });
-    } else {
-        promise.reject(Errors.NO_PERMISSION);
+    if (!client.user) {
+        return promise.reject(Error.notAllowed);
     }
+    client.user.toggleFollowing(packet.user, function (err, following) {
+        if (err) {
+            return promise.reject(Error.notFound);
+        }
+        promise.fulfill({
+            $: 'result',
+            result: following
+        });
+    });
 });
 Client.listener.on('user.following', function (client, packet, promise) {
-    if (client.user) {
-        promise.fulfill(client.user.following.indexOf(packet.user) !== -1);
-    } else {
-        promise.reject(Errors.NO_PERMISSION);
+    if (!client.user) {
+        return promise.reject(Error.notAllowed);
     }
+    promise.fulfill(client.user.following.indexOf(packet.user) !== -1);
 });
 /**
  * Queries information about a user.

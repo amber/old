@@ -15,15 +15,6 @@ var Async = require('async'),
     Client = require('./lib/client.js');
 
 
-var Errors = {
-    notFound: 0,
-    auth: {
-        incorrectCredentials: 1
-    },
-    NO_PERMISSION: 2
-};
-
-
 Client.listener.on('watch.home.signedOut', function (client, packet, promise) {
     client.unwatchAll();
     Async.parallel([
@@ -183,11 +174,10 @@ Client.listener.on('projects.topRemixed', function (client, packet, promise) {
  * @return {(subset of Project)[]}
  */
 Client.listener.on('projects.lovedByFollowing', function (client, packet, promise) {
-    if (client.user) {
-
-    } else {
-        promise.reject(Errors.NO_PERMISSION);
+    if (!client.user) {
+        return promise.reject(Error.notAllowed);
     }
+    // TODO
 });
 /**
  * Queries the list of projects by users the current user is following, sorted by date.
@@ -199,24 +189,23 @@ Client.listener.on('projects.lovedByFollowing', function (client, packet, promis
  */
 Client.listener.on('projects.user.byFollowing', function (client, packet, promise) {
     if (client.user) {
-        Project.find({authors: {$in: client.user.following}}).sort('-modified').skip(packet.offset).limit(packet.length).exec(function (err, projects) {
-            promise.fulfill({
-                $: 'result',
-                result: projects.map(function (p) {
-                    return {
-                        id: p._id,
-                        authors: p.authors,
-                        project: {
-                            name: p.name,
-                            thumbnail: p.thumbnail
-                        }
-                    };
-                })
-            });
-        });
-    } else {
-        promise.reject(Errors.NO_PERMISSION);
+        promise.reject(Error.notAllowed);
     }
+    Project.find({authors: {$in: client.user.following}}).sort('-modified').skip(packet.offset).limit(packet.length).exec(function (err, projects) {
+        promise.fulfill({
+            $: 'result',
+            result: projects.map(function (p) {
+                return {
+                    id: p._id,
+                    authors: p.authors,
+                    project: {
+                        name: p.name,
+                        thumbnail: p.thumbnail
+                    }
+                };
+            })
+        });
+    });
 });
 Client.listener.on('projects.byUser', function (client, packet, promise) {
     Project.find({authors: packet.user}).sort('-modified').skip(packet.offset).limit(packet.length).exec(function (err, result) {

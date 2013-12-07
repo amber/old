@@ -5,6 +5,8 @@ var mongoose = require('mongoose'),
     Watch = require('./watch.js'),
     Topic = require('./forum/topic.js'),
 
+    Error = require('./error.js'),
+
     Async = require('async');
 
 var defaultProject = '14c7903ef24d4aa4c1c6bb625d2fa05bc3b52e3cc975b23e407451367c5451b1';
@@ -129,14 +131,16 @@ var Project = module.exports = mongoose.model('Project', ProjectSchema);
  */
 Client.listener.on('project', function (client, packet, promise) {
     Project.findById(packet.project$id, function (err, project) {
-        if (project) {
+        if (!project) {
+            return promise.reject(Error.notFound);
+        }
+        project.views++;
+        project.save(function (err) {
             promise.fulfill({
                 $: 'result',
                 result: project.serialize()
             });
-        } else {
-            promise.reject(Errors.notFound);
-        }
+        });
     });
 });
 
@@ -148,51 +152,48 @@ Client.listener.on('project', function (client, packet, promise) {
  * @return {boolean}
  */
 Client.listener.on('project.love', function (client, packet, promise) {
-    if (client.user) {
-        client.user.toggleLoveProject(packet.project$id, function (love) {
-            if (love === null) {
-                promise.reject(Errors.notFound);
-            } else {
-                promise.fulfill({
-                    $: 'result'
-                });
-            }
-        });
-    } else {
-        promise.reject(Errors.NO_PERMISSION);
+    if (!client.user) {
+        return promise.reject(Error.notAllowed);
     }
+    client.user.toggleLoveProject(packet.project$id, function (err, love) {
+        if (err) {
+            return promise.reject(Error.notFound);
+        }
+        promise.fulfill({
+            $: 'result'
+        });
+    });
 });
 
 Client.listener.on('project.create', function (client, packet, promise) {
-    if (client.user) {
-        var project;
-        Async.series([
-            function (cb) {
-                Project.create(function (err, p) {
-                    project = p;
-                    project.authors.push(client.user);
-                    cb();
-                });
-            },
-            function (cb) {
-                client.user.populate('projects', cb)
-            },
-            function (cb) {
-                client.user.projects.addProject(client.user, project);
-                client.user.projects.save(cb);
-            },
-            function (cb) {
-                project.save(cb);
-            }
-        ], function () {
-            promise.fulfill({
-                $: 'result',
-                result: project._id
-            });
-        })
-    } else {
-        promise.reject(Errors.NO_PERMISSION);
+    if (!client.user) {
+        return promise.reject(Error.notAllowed);
     }
+    var project;
+    Async.series([
+        function (cb) {
+            Project.create(function (err, p) {
+                project = p;
+                project.authors.push(client.user);
+                cb();
+            });
+        },
+        function (cb) {
+            client.user.populate('projects', cb)
+        },
+        function (cb) {
+            client.user.projects.addProject(client.user, project);
+            client.user.projects.save(cb);
+        },
+        function (cb) {
+            project.save(cb);
+        }
+    ], function () {
+        promise.fulfill({
+            $: 'result',
+            result: project._id
+        });
+    });
 });
 
 /**

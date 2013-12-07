@@ -6,6 +6,8 @@ var mongoose = require('mongoose'),
     Forum,
     Post,
 
+    Error = require('../error.js'),
+
     Async = require('async'),
     Serialize = require('../serializer.js');
 
@@ -102,7 +104,7 @@ Client.listener.on('forums.topic', function (client, packet, promise) {
                 }
             });
         } else {
-            promise.reject(Errors.notFound);
+            promise.reject(Error.notFound);
         }
     });
 });
@@ -110,13 +112,11 @@ Client.listener.on('forums.topic', function (client, packet, promise) {
 Client.listener.on('forums.topic.add', function (client, packet, promise) {
     var self = client;
     if (!client.user) {
-        promise.reject(Errors.NO_PERMISSION);
-        return;
+        return promise.reject(Error.notAllowed);
     }
     Forum.findById(packet.forum$id, function (err, forum) {
         if (!forum) {
-            promise.reject(Errors.notFound);
-            return;
+            return promise.reject(Error.notFound);
         }
         var topic, post;
         Async.parallel([
@@ -175,7 +175,7 @@ Client.listener.on('forums.topics', function (client, packet, promise) {
                 });
             });
         } else {
-            promise.reject(Errors.notFound);
+            promise.reject(Error.notFound);
         }
     });
 });
@@ -195,8 +195,7 @@ Client.listener.on('watch.topic', function (client, packet, promise) {
     };
     Topic.findById(packet.topic$id).exec(function (err, topic) {
         if (!topic) {
-            promise.reject(Errors.notFound);
-            return;
+            return promise.reject(Error.notFound);
         }
         topic.views++;
         topic.save(function (err) {
